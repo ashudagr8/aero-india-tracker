@@ -1,9 +1,3 @@
-[![License: MIT](https://shields.io)](https://opensource.org)
-[![GitHub release](https://shields.io)](https://github.com)
-![Ubuntu](https://shields.io)
-[![Model Context Protocol](https://shields.io)](https://modelcontextprotocol.io)
-
-
 # Aero India Registration Tracker
 
 An HTTP-triggered Google Cloud Function that watches the Aero India visitor registration page (`https://aeroindia.gov.in/visit`). It asks an LLM whether general-visitor registration has started and emails you the result. Call it on a schedule (for example with Cloud Scheduler). The LLM is only called again when the page text has changed.
