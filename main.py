@@ -35,7 +35,6 @@ OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL")
 OPENROUTER_FALLBACK_MODELS = [
     m.strip() for m in os.environ.get("OPENROUTER_FALLBACK_MODELS", "").split(",") if m.strip()
 ]
-print (f'OPENROUTER_API_KEY: {OPENROUTER_API_KEY}')
 print (f'LLM_PROVIDER: {LLM_PROVIDER}')
 
 class GraphState(TypedDict):
