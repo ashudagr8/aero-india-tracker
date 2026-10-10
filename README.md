@@ -1,4 +1,8 @@
 [![License: MIT](https://shields.io)](https://opensource.org)
+[![GitHub release](https://shields.io)](https://github.com)
+![Ubuntu](https://shields.io)
+[![Model Context Protocol](https://shields.io)](https://modelcontextprotocol.io)
+
 
 # Aero India Registration Tracker
 
