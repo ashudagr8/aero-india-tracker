@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets / local config
+.env
+.env.*
+*.pem
+*.key
+
+# Local run output
+*.log
+run_log.csv
+scraped_text.txt
+llm_answer.txt
+
+# Editor / OS
+.idea/
+.DS_Store

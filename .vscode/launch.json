@@ -1,0 +1,30 @@
+{
+    "configurations": [
+      {
+        "name": "Deploy Cloud Function",
+        "type": "cloudcode.cloudfunctions",
+        "request": "launch",
+        "functionName": "aero_india_tracker",
+        "gen": "GEN_2",
+        "entryPoint": "aero_india_tracker",
+        "revision": "aero-india-tracker-00018-qaj",
+        "testInput": "",
+        "region": "asia-southeast2",
+        "runtime": "python314"
+      },
+      {
+        "name": "Python: Run Functions Framework",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "functions_framework",
+        "cwd": "${workspaceFolder}",
+        "python": "${workspaceFolder}/.venv/bin/python",
+        "console": "integratedTerminal",
+        "args": [
+          "--target=aero_india_tracker",
+          "--host=localhost",
+          "--port=8000"
+        ]
+      }
+    ]
+}
