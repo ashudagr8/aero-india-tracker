@@ -1,99 +1,134 @@
-<img src="https://avatars2.githubusercontent.com/u/2810941?v=3&s=96" alt="Google Cloud Platform logo" title="Google Cloud Platform" align="right" height="96" width="96"/>
+# Aero India Registration Tracker
 
-# Cloud Functions Hello World with Cloud Code
-
-"Python: Hello World" is a simple HTTP-triggered Cloud Functions application that contains a sample Python-based script that outputs a sample "Hello World" string.
+An HTTP-triggered Google Cloud Function that watches the Aero India visitor registration page (`https://aeroindia.gov.in/visit`). It asks an LLM whether general-visitor registration has started and emails you the result. Call it on a schedule (for example with Cloud Scheduler). The LLM is only called again when the page text has changed.
 
 ## Table of Contents
 
+* [Architecture](#architecture)
+* [Environment variables](#environment-variables)
 * [Directory contents](#directory-contents)
+* [Notes](#notes)
 * [Getting started with VS Code](#getting-started-with-vs-code)
-* [Sign up for user research](#sign-up-for-user-research)
+
+## Architecture
+
+```
+HTTP request -> aero_india_tracker() -> LangGraph app -> parse verdict -> email -> JSON response
+```
+
+### LangGraph
+
+State (`GraphState`): `url`, `question`, `webpage_text`, `answer`, `text_changed`.
+
+```
+START -> scrape_webpage --(changed)---> answer_question ----+
+                        \-(unchanged)-> use_cached_answer ---+-> END
+```
+
+| Node | Description |
+|---|---|
+| `scrape_webpage` | Fetches the page with `requests`, strips script and style tags with BeautifulSoup and normalizes the text. Compares it with the cached copy in `/tmp/scraped_text.txt`. Sets `text_changed` if the text differs or no cached answer exists. |
+| `route_on_change` (conditional edge) | Routes to `answer_question` when changed, otherwise to `use_cached_answer`. |
+| `answer_question` | Sends the page text and question to the LLM, which replies starting with `Verdict: Yes/No/Unknown`. Uses OpenRouter (with fallback models) or Ollama. Caches the answer and page text only when the verdict is not `Unknown`, so failed runs are retried. |
+| `use_cached_answer` | Returns the answer from `/tmp/llm_answer.txt`. |
+
+After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<think>` blocks). `send_result_email` sends a Gmail SMTP message with the subject "Started Now" or "Not Started". The function returns JSON with `status`, `run_time` (IST), `verdict`, `content_changed` and `answer`. Any exception returns HTTP 500 with an error message.
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `LLM_PROVIDER` | No (default `ollama`) | `ollama` or `openrouter` |
+| `OPENROUTER_API_KEY` | If `openrouter` | OpenRouter API key |
+| `OPENROUTER_MODEL` | If `openrouter` | Primary model ID, e.g. `anthropic/claude-sonnet-4.6` |
+| `OPENROUTER_FALLBACK_MODELS` | No | Comma-separated fallback model IDs, tried in order, e.g. `openai/gpt-5.4-mini,google/gemini-2.5-flash` |
+| `OLLAMA_BASE_URL` | No (default `http://host.docker.internal:11434`) | Ollama server (local runs only) |
+| `OLLAMA_MODEL` | No (default `qwen3:4b`) | Ollama model name |
+| `GMAIL_ADDRESS` | For email | Sender Gmail address |
+| `GMAIL_APP_PASSWORD` | For email | Gmail app password |
+| `NOTIFY_EMAIL_TO` | No (defaults to `GMAIL_ADDRESS`) | Recipient address |
+
+If the Gmail variables are missing, the function still runs but sends no email.
+
+Example for Cloud Run (the `^@^` prefix changes the separator so commas in the value are kept):
+
+```
+gcloud run services update aero-india-tracker \
+  --region asia-southeast2 \
+  --update-env-vars "^@^LLM_PROVIDER=openrouter@OPENROUTER_MODEL=<model>@OPENROUTER_FALLBACK_MODELS=<model1>,<model2>"
+```
 
 ## Directory contents
-* `launch.json` - the required configurations for your function
-* `main.py` - the Python "Hello World" sample’s code
-* `requirements.txt` - includes the functions framework dependency
+
+* `main.py` - the function code and LangGraph workflow
+* `requirements.txt` - pinned dependencies
+* `.gcloudignore` - keeps `.venv`, caches and editor files out of the deploy bundle
+* `.vscode/launch.json` - Cloud Code deploy and local debug configurations
+
+## Notes
+
+* The cache files live in `/tmp`, which is per-instance and cleared on cold starts, so the change detection resets then. To persist them, mount a Cloud Storage bucket as a Cloud Run volume and point the file paths at it.
+* `openrouter` pins `pydantic<2.13`, so `requirements.txt` pins `pydantic==2.12.5`.
+
 
 ## Getting started with VS Code
 
-### Before you begin
+### Prerequisites
 
-1. If you're new to Google Cloud, [create an account](https://console.cloud.google.com/freetrial/signup/tos) to evaluate how our products perform in real-world scenarios. New customers also get $300 in free credits to run, test, and deploy workloads.
+1. A Google Cloud project with billing enabled, and a Google account with permission to deploy to it.
+1. Enable these APIs: Cloud Functions, Cloud Build, Artifact Registry, Cloud Run and Cloud Logging.
+1. [VS Code](https://code.visualstudio.com/) with the [Cloud Code extension](https://cloud.google.com/code/docs/vscode/install) and the Python and Python Debugger extensions.
+1. Python 3.12 or newer. The function is configured for `python314` in `.vscode/launch.json`, so use a version supported by your dependencies.
+1. The [Google Cloud CLI](https://cloud.google.com/sdk/docs/install), signed in with `gcloud auth login` and `gcloud config set project <PROJECT_ID>`.
+1. For the Ollama provider only: a local [Ollama](https://ollama.com/) server with the model pulled (for example `ollama pull qwen3:4b`).
 
-1. If you're testing this out to learn about the feature, [create a new project](https://pantheon.corp.google.com/projectselector2/home/dashboard) so that you can delete the project and all associated resources when you're finished.
+### Set up the local environment
 
-   You can also use this template as a starting point to create a new function in a new or existing project.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-1. Make sure that billing is enabled for your Cloud project. Learn how to [check if billing is enabled on a project](https://cloud.google.com/billing/docs/how-to/verify-billing-enabled).
+Select `.venv` as the interpreter in VS Code (Command Palette > **Python: Select Interpreter**).
 
-1. [Enable the following APIs](https://pantheon.corp.google.com/projectselector2/apis/enableflow?apiid=cloudfunctions,cloudbuild.googleapis.com,artifactregistry.googleapis.com,run.googleapis.com,logging.googleapis.com,pubsub.googleapis.com&redirect=https:%2F%2Fcloud.google.com%2Ffunctions%2Fdocs%2Fcreate-deploy-nodejs):
+Set the environment variables from the table above in your shell before launching. For example, with OpenRouter:
 
-    * Cloud Functions
-    * Cloud Build
-    * Artifact Registry
-    * Cloud Run
-    * Logging
-    * Pub/Sub
-    
-1. Install [Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git). Git is required for copying samples to your machine.
+```bash
+export LLM_PROVIDER=openrouter
+export OPENROUTER_API_KEY=<your key>
+export OPENROUTER_MODEL=<model id>
+export OPENROUTER_FALLBACK_MODELS=<model1>,<model2>   # optional
+export GMAIL_ADDRESS=<sender>                          # optional, enables email
+export GMAIL_APP_PASSWORD=<app password>
+```
 
-1. Install the [Cloud Code plugin](https://cloud.google.com/code/docs/vscode/install#installing) if you haven't already.
+Do not commit keys. `.env` files are already in `.gitignore`.
 
-1. Since Cloud Functions integration is currently a pre-release feature, you'll also need to [install the pre-release build](https://cloud.google.com/code/docs/vscode/insiders#get).
+### Run and debug locally
 
-#### Create a function
+Two configurations are defined in `.vscode/launch.json`:
 
-To create a new function using this sample, follow these steps:
+* **Python: Run Functions Framework** - starts the function at `http://localhost:8000` using the `functions_framework` module under the debugger. Start it from **Run and Debug** (F5), then call it:
+  ```bash
+  curl http://localhost:8000
+  ```
+* **Deploy Cloud Function** - the Cloud Code deploy configuration (see below).
 
-1. Click ![Cloud Code icon](https://cloud.google.com/static/code/docs/vscode/images/cloudcode-icon.png) **Cloud Code** and then expand the **Cloud Functions** section.
+Local runs write the cache files to `/tmp`. Delete `/tmp/scraped_text.txt` and `/tmp/llm_answer.txt` to force a fresh LLM call.
 
-1. Click **+ Create function** and select the **Python: Hello World** template.
+### Deploy with Cloud Code
 
-1. Navigate to the pathway that you'd like to create your new function in, enter a name for the function, and select **Create New Application**.
+1. Open the **Cloud Code** view and expand **Cloud Functions**.
+1. Right-click the function (or run **Deploy Cloud Function** from Run and Debug) and select **Deploy function**.
+1. Pick the project, region (`asia-southeast2` in `launch.json`) and runtime.
+1. After deployment, add the environment variables in the Cloud Run service: **Edit & deploy new revision > Variables & Secrets**. Prefer Secret Manager for `OPENROUTER_API_KEY` and `GMAIL_APP_PASSWORD`.
 
-1. If the folder of your application doesn't appear automatically in the **Explorer**, click ![VS Code Refresh icon](https://cloud.google.com/static/code/docs/vscode/images/refresh-icon.png) **Refresh**.
+`.gcloudignore` keeps `.venv`, caches and editor files out of the upload. If a deployment fails, open the build logs link shown in the **Output** tab.
 
-#### Deploy a function
+### Troubleshooting
 
-To deploy a function, follow these steps:
-
-1. Right-click a function and select **Deploy function**.
-
-1. In the Quickpick menu, select a GCP project to deploy your function to.
-
-1. Select a region that the function will be deployed to.
-
-1. Select a runtime.
-
-The function's deployment may take a few minutes.
-
-If the deployment fails, refer to the **Output** tab for the error message. Clicking the link takes you to the build logs in Google Cloud console and provides more detail about the error.
-
-#### Clean up
-
-To delete only the function you created for this quickstart:
-
-1. In the Cloud Functions explorer, right-click the function name and then select **Open in Cloud Console**.
-
-1. Click **Delete** and then click **Delete**.
-
-To delete your project and the project's associated resources:
-
-1. Go to the [Projects page](https://pantheon.corp.google.com/cloud-resource-manager) in the Google Cloud console.
-
-1. Select the project that you created for this quickstart and then click **Delete**.
-
-1. Type the project ID to confirm and then click **Shut down**.
-
-   This shuts down the project and schedules it for deletion.
-
-### Sign up for user research
-
-We want to hear your feedback!
-
-The Cloud Code team is inviting our user community to sign-up to participate in Google User Experience Research. 
-
-If you’re invited to join a study, you may try out a new product or tell us what you think about the products you use every day. At this time, Google is only sending invitations for upcoming remote studies. Once a study is complete, you’ll receive a token of thanks for your participation such as a gift card or some Google swag. 
-
-[Sign up using this link](https://google.qualtrics.com/jfe/form/SV_4Me7SiMewdvVYhL?reserved=1&utm_source=In-product&Q_Language=en&utm_medium=own_prd&utm_campaign=Q1&productTag=clou&campaignDate=January2021&referral_code=UXbT481079) and answer a few questions about yourself, as this will help our research team match you to studies that are a great fit.
+* **`EISDIR` while deploying:** the `.venv` folder was included in the upload; check `.gcloudignore`.
+* **Container failed to start on port 8080:** a dependency is missing from `requirements.txt`, so the import fails. Check the revision logs.
+* **uv "unsatisfiable requirements":** a package is pinned twice or two pins conflict. Keep one pin per package.
+* **429 from OpenRouter:** set `OPENROUTER_FALLBACK_MODELS` or use another model.
