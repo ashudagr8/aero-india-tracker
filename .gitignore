@@ -24,3 +24,4 @@ llm_answer.txt
 # Editor / OS
 .idea/
 .DS_Store
+.vscode/
