@@ -8,3 +8,6 @@ __pycache__/
 *.pyc
 .vscode/
 README.md
+tests/
+.local-articles/
+topics.example.json

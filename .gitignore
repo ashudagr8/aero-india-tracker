@@ -16,6 +16,7 @@ env/
 *.key
 
 # Local run output
+.local-articles/
 *.log
 run_log.csv
 scraped_text.txt

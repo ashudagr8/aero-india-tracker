@@ -6,6 +6,7 @@ import time
 import smtplib
 import requests
 from datetime import datetime, timedelta, time as dtime
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
@@ -15,6 +16,8 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, START, END
 from openrouter import OpenRouter
 from langchain_core.messages import HumanMessage
+import email_templates
+import insights
 
 
 # Cloud Functions require writing local files to the ephemeral /tmp directory
@@ -87,16 +90,16 @@ def use_cached_answer_node(state: GraphState) -> dict:
             cached_answer = f.read()
     return {"answer": cached_answer}
 
-def create_llm():
+def create_llm(temperature: float = 0):
     if LLM_PROVIDER == "ollama":
         return ChatOllama(
             base_url=os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
             model=os.environ.get("OLLAMA_MODEL", "qwen3:4b"),
-            temperature=0,
+            temperature=temperature,
         )
     raise ValueError("LLM_PROVIDER must be 'ollama' or 'openrouter'.")
 
-def invoke_openrouter(prompt: str) -> str:
+def invoke_openrouter(prompt: str, temperature: float = 0) -> str:
     if not OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
     if not OPENROUTER_MODEL:
@@ -106,9 +109,14 @@ def invoke_openrouter(prompt: str) -> str:
             model=OPENROUTER_MODEL,
             models=OPENROUTER_FALLBACK_MODELS or None,  # OpenRouter falls back in order if the primary fails
             messages=[{"role": "user", "content": prompt}],
-            temperature=0,
+            temperature=temperature,
         )
     return completion.choices[0].message.content or ""
+
+def call_llm(prompt: str, temperature: float = 0) -> str:
+    if LLM_PROVIDER == "openrouter":
+        return invoke_openrouter(prompt, temperature)
+    return create_llm(temperature).invoke([HumanMessage(content=prompt)]).content
 
 def parse_verdict(answer: str) -> str:
     answer = re.sub(r"<think>.*?</think>", "", answer or "", flags=re.S)
@@ -133,10 +141,7 @@ def answer_question_node(state: GraphState) -> dict:
     Provide a direct, factual answer based strictly on the provided Webpage Context. If the context does not contain the answer, say "Information not found".
     Begin your reply with exactly one line in the form "Verdict: Yes" or "Verdict: No" (use "Verdict: Unknown" if the context lacks the answer), followed by brief explanation in the next two lines only.
     """
-    if LLM_PROVIDER == "openrouter":
-        answer = invoke_openrouter(prompt)
-    else:
-        answer = create_llm().invoke([HumanMessage(content=prompt)]).content
+    answer = call_llm(prompt)
 
     # Persist cache and scraped text only after a valid answer, so failures are retried next run
     if parse_verdict(answer) != "Unknown":
@@ -165,38 +170,52 @@ workflow.add_edge("answer_question", END)
 workflow.add_edge("use_cached_answer", END)
 app = workflow.compile()
 
-def send_result_email(run_time: str, verdict: str, content_changed: str, answer: str) -> None:
+def send_email(subject: str, text: str, html: str) -> bool:
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not NOTIFY_EMAIL_TO:
         print("Email not sent: Environment credentials missing.")
-        return
+        return False
 
-    status = "Started Now" if verdict.lower() == "yes" else "Not Started"
-    subject = f"Aero India General Visitor Registration: {status}"
-    body = (
-            f"Hi there,\n\n"
-            f"Here is the latest Aero India visitor registration update from {run_time}.\n\n"
-            f"General Visitor Registration: {verdict}\n"
-            f"Website changed since last run: {content_changed}\n\n"    
-            f"Source: {WEBSITE_NAME} ({WEBSITE_URL})\n\n"
-            "Best,\nYour Aero India website checker"
-    )
-
-    message = MIMEText(body)
+    message = MIMEMultipart("alternative")
     message["Subject"] = subject
     message["From"] = GMAIL_ADDRESS
     message["To"] = NOTIFY_EMAIL_TO
+    message.attach(MIMEText(text, "plain", "utf-8"))
+    message.attach(MIMEText(html, "html", "utf-8"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
             smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             smtp.send_message(message)
         print(f"Email notification sent to {NOTIFY_EMAIL_TO}.")
+        return True
     except Exception as exc:
         print(f"Email notification failed: {exc}")
+        return False
+
+def send_result_email(run_time: str, verdict: str, content_changed: str, insight: dict | None = None) -> bool:
+    status = "Started Now" if verdict.lower() == "yes" else "Not Started"
+    subject = f"Aero India General Visitor Registration: {status}"
+    text, html = email_templates.render_notification(
+        run_time, verdict, content_changed, WEBSITE_NAME, WEBSITE_URL,
+        insight=insight,
+    )
+    return send_email(subject, text, html)
 
 # HTTP entry point for Google Cloud Functions Framework
 @functions_framework.http
 def aero_india_tracker(request):
+    # Browsers also request /favicon.ico etc.; those must not trigger a run (or send emails)
+    if request.path not in ("", "/"):
+        return "Not found", 404
+
+    if request.args.get("action") or request.form.get("action"):
+        try:
+            html, status = insights.handle_action(request.method, request.values)
+        except Exception as e:
+            print(f"Approval action failed: {e}")
+            html, status = email_templates.render_page("Error", "<p>Something went wrong.</p>"), 500
+        return html, status, {"Content-Type": "text/html; charset=utf-8"}
+
     try:
         inputs = {
             "url": WEBSITE_URL,
@@ -215,15 +234,32 @@ def aero_india_tracker(request):
         ist_time = datetime.now(ZoneInfo("Asia/Kolkata"))
         run_time = ist_time.strftime("%d/%m/%y %I:%M %p IST")
 
-        # Send Email Update
-        send_result_email(run_time, verdict, content_changed, result["answer"])
+        insight, insight_summary = None, None
+        # One run at a time per instance, so overlapping requests cannot draft or send twice
+        with insights.STATE_LOCK:
+            if insights.insights_enabled():
+                try:
+                    insight, insight_summary = insights.prepare_insight(call_llm, send_email)
+                except Exception as e:
+                    # Insights must never block the registration notification
+                    print(f"Insights step failed: {e}")
+                    insight_summary = {"errors": [str(e)]}
+
+            sent = send_result_email(run_time, verdict, content_changed, insight)
+            if sent and insight:
+                try:
+                    insights.mark_sent(insight["id"])
+                except Exception as e:
+                    print(f"Failed to mark insight sent: {e}")
 
         return {
             "status": "success",
             "run_time": run_time,
             "verdict": verdict,
             "content_changed": content_changed,
-            "answer": result["answer"]
+            "answer": result["answer"],
+            "insight_included": insight["id"] if insight and sent else None,
+            "insights": insight_summary,
         }, 200
 
     except Exception as e:
