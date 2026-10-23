@@ -71,6 +71,17 @@ gcloud scheduler jobs create http insights-digest --schedule="30 21 * * *" --tim
 
 The digest contains recipient addresses and feedback, so it goes to the owner only.
 
+### Re-sending insights (`/reset`)
+
+`POST <function URL>/reset` clears delivery history so approved articles are sent again from the oldest. Requires header `X-Reset-Token` equal to `RESET_TOKEN` (route is disabled if unset; GET returns 405). Add `-d email=<address>` to reset one recipient only (case-insensitive); otherwise all recipients are reset. Article content, approvals and feedback are untouched, and a backup `articles.backup-<UTC timestamp>.json` is saved in the bucket first (delete old ones manually). The digest will then show full remaining stock.
+
+```
+curl -X POST -H "X-Reset-Token: <RESET_TOKEN>" "<function URL>/reset"
+curl -X POST -H "X-Reset-Token: <RESET_TOKEN>" -d email=a@example.com "<function URL>/reset"
+```
+
+Avoid running it while a notification run is in progress.
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -86,6 +97,7 @@ The digest contains recipient addresses and feedback, so it goes to the owner on
 | `NOTIFY_EMAIL_TO` | No (defaults to `GMAIL_ADDRESS`) | Recipient address(es), comma-separated; each gets a separate private message (review emails go only to `GMAIL_ADDRESS`) |
 | `INCLUDE_INSIGHTS` | No (default `true`) | `false` disables the insights feature |
 | `DIGEST_TOKEN` | For `/digest` | Shared secret required to call the daily digest route |
+| `RESET_TOKEN` | For `/reset` | Shared secret required to call the reset route (POST only) |
 | `LOW_STOCK_THRESHOLD` | No (default `3`) | Remaining-insights level at or below which the digest warns of low stock |
 | `ARTICLES_BUCKET` | For insights (or `ARTICLES_DIR`) | Bucket holding `topics.json` and `articles.json` |
 | `ARTICLES_DIR` | Local runs only | Local folder holding the same two files instead of a bucket, e.g. `./.local-articles`. Takes precedence over `ARTICLES_BUCKET`. Not suitable for Cloud Run (ephemeral disk). |

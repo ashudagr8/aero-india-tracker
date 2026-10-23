@@ -274,6 +274,27 @@ def aero_india_tracker(request):
             print(f"Digest failed: {type(e).__name__}")
             return {"status": "error"}, 500
 
+    if request.path == "/reset":
+        if request.method != "POST":
+            return {"status": "method_not_allowed"}, 405
+        expected = os.environ.get("RESET_TOKEN", "")
+        supplied = request.headers.get("X-Reset-Token", "")
+        if not expected or not hmac.compare_digest(supplied, expected):
+            return {"status": "unauthorized"}, 401
+        if not insights.insights_enabled():
+            return {"status": "disabled"}, 200
+        email = (request.values.get("email") or "").strip() or None
+        try:
+            with insights.STATE_LOCK:
+                count = insights.reset_delivery(email)
+        except Exception as e:
+            print(f"Reset failed: {type(e).__name__}")
+            return {"status": "error"}, 500
+        if count is None:
+            return {"status": "not_found"}, 404
+        return {"status": "success", "articles_reset": count,
+                "scope": "recipient" if email else "all"}, 200
+
     # Browsers also request /favicon.ico etc.; those must not trigger a run (or send emails)
     if request.path not in ("", "/"):
         return "Not found", 404

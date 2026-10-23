@@ -387,6 +387,35 @@ def unsent_count(recipients, store=None) -> int:
                if a["status"] == "approved" and any(r not in a.get("sent_to", {}) for r in recipients))
 
 
+def reset_delivery(email=None, store=None):
+    """Clear delivery history (all recipients, or one) so articles are re-sent.
+
+    Saves a timestamped backup first. Returns the number of articles changed,
+    or None when `email` matches no delivery record.
+    """
+    store = store or default_store()
+    articles = store.load(ARTICLES_BLOB, {})
+    target = email.strip().lower() if email else None
+    changed = 0
+    for art in articles.values():
+        sent = art.get("sent_to") or {}
+        if target is None:
+            if sent:
+                art["sent_to"] = {}
+                changed += 1
+        else:
+            keys = [k for k in sent if k.lower() == target]
+            for k in keys:
+                del sent[k]
+            changed += bool(keys)
+    if target is not None and not changed:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    store.save(f"articles.backup-{stamp}.json", store.load(ARTICLES_BLOB, {}))
+    store.save(ARTICLES_BLOB, articles)
+    return changed
+
+
 # ---- daily owner digest ----------------------------------------------------------------------
 
 IST = ZoneInfo("Asia/Kolkata")
