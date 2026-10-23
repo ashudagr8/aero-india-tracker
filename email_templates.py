@@ -71,7 +71,7 @@ def _wrap(preheader: str, header_html: str, body_html: str, footer: str) -> str:
 
 
 def render_notification(run_time, verdict, content_changed, website_name, website_url,
-                        insight=None):
+                        insight=None, feedback_url=None):
     label, color = STATUS_STYLES.get(verdict.lower(), STATUS_STYLES["unknown"])
     body = (
         '<div style="font-size:13px;color:#6b7785;margin-bottom:8px;">General visitor registration</div>'
@@ -99,6 +99,9 @@ def render_notification(run_time, verdict, content_changed, website_name, websit
         )
         text += f"\n--- Insight of the day ---\n{insight['topic']}\n\n{insight['answer']}\n"
     footer = f"Source: {escape(website_name)}<br>Sent by your Aero India website checker."
+    if feedback_url:
+        footer += f'<br><a href="{escape(feedback_url, quote=True)}" style="color:#0b5cad;">Send feedback</a>'
+        text += f"\nSend feedback: {feedback_url}\n"
     text += f"\nSource: {website_name} ({website_url})\n"
     html = _wrap(f"General visitor registration: {label}", _header(label, run_time), body, footer)
     return text, html
@@ -137,6 +140,98 @@ def render_review(article, approve_url, feedback_url, discard_url):
     html = _wrap(title, _header(title, f"Version {revision}"), body,
                  "You are receiving this because insight review is enabled.")
     return title, text, html
+
+
+def _fmt(dt):
+    return dt.strftime("%d/%m/%y %I:%M %p") if dt else "never"
+
+
+def _feedback_block(entries, with_email=False):
+    out = ""
+    for e in entries:
+        who = f"{escape(e['email'])} &middot; " if with_email else ""
+        out += (
+            '<div style="border-left:3px solid #c9d6e6;padding:4px 12px;margin:0 0 12px 0;">'
+            f'<div style="font-size:12px;color:#6b7785;">{who}{escape(_fmt(e["at"]))} &middot; '
+            f'{escape(e["topic"])}</div>'
+            f'<div style="white-space:pre-wrap;">{escape(e["text"])}</div></div>'
+        )
+    return out
+
+
+def render_digest(d):
+    """Daily owner report. Returns (subject, text, html)."""
+    date_label = d["now"].strftime("%d/%m/%y")
+    people, new_fb, threshold = d["people"], d["new_feedback"], d["threshold"]
+    subject = (f"Aero India | Daily Insights Digest | {date_label} | "
+               f"{len(people)} recipients, {len(new_fb)} new feedback")
+    if d["low_stock"]:
+        subject += " | LOW STOCK"
+
+    body = (
+        f'<p style="margin:0 0 16px 0;">Approved insights: <strong>{d["approved"]}</strong> &middot; '
+        f'pending review: <strong>{d["pending"]}</strong> &middot; '
+        f'topics not yet drafted: <strong>{d["undrafted"]}</strong></p>'
+    )
+    text = (f"Daily insights digest ({date_label})\n\nApproved: {d['approved']}, "
+            f"pending review: {d['pending']}, topics not yet drafted: {d['undrafted']}\n")
+    if d["low_stock"]:
+        low = [p for p in people if p["remaining"] <= threshold]
+        body += (
+            '<div style="background-color:#fdecea;border-left:4px solid #c0392b;padding:12px 16px;'
+            f'margin:0 0 18px 0;"><strong>Low stock:</strong> {len(low)} recipient(s) have '
+            f'{threshold} or fewer insights left. Add new topics soon.</div>')
+        text += f"\nLOW STOCK: {len(low)} recipient(s) have {threshold} or fewer insights left.\n"
+
+    cell = 'style="padding:6px 8px;border-bottom:1px solid #e5e9f0;text-align:left;"'
+    rows = ""
+    text += "\nRecipients (received / today / remaining / last sent / feedback total / today)\n"
+    for p in people:
+        flag = ' style="background-color:#fdecea;"' if p["remaining"] <= threshold else ""
+        rows += (
+            f"<tr{flag}><td {cell}>{escape(p['email'])}</td><td {cell}>{p['received']}</td>"
+            f"<td {cell}>{p['received_today']}</td><td {cell}><strong>{p['remaining']}</strong></td>"
+            f"<td {cell}>{escape(_fmt(p['last_sent']))}</td>"
+            f"<td {cell}>{p['feedback_total']} ({p['feedback_today']} today)</td></tr>")
+        text += (f"- {p['email']}: {p['received']} / {p['received_today']} / {p['remaining']} / "
+                 f"{_fmt(p['last_sent'])} / {p['feedback_total']} / {p['feedback_today']}\n")
+    heads = "".join(f"<th {cell}>{h}</th>" for h in
+                    ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)", "Feedback"))
+    body += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+             f'style="font-size:13px;border-collapse:collapse;"><tr>{heads}</tr>{rows}</table>')
+
+    body += '<h3 style="color:%s;margin:26px 0 10px 0;">New feedback today</h3>' % NAVY
+    text += "\nNew feedback today\n"
+    if new_fb:
+        body += _feedback_block(new_fb, with_email=True)
+        for e in new_fb:
+            text += f"- {e['email']} [{_fmt(e['at'])}] {e['topic']}\n  {e['text']}\n"
+    else:
+        body += '<p style="color:#6b7785;">None.</p>'
+        text += "None.\n"
+
+    body += '<h3 style="color:%s;margin:26px 0 10px 0;">Overall feedback by recipient</h3>' % NAVY
+    text += "\nOverall feedback by recipient (latest entries)\n"
+    for p in people:
+        body += (f'<div style="font-weight:600;margin:0 0 6px 0;">{escape(p["email"])} '
+                 f'<span style="font-weight:400;color:#6b7785;">({p["feedback_total"]} total)</span></div>')
+        text += f"{p['email']} ({p['feedback_total']} total)\n"
+        if not p["recent_feedback"]:
+            body += '<p style="color:#6b7785;margin:0 0 12px 0;">No feedback yet.</p>'
+            continue
+        shown = [{**e, "text": e["text"][:300] + ("..." if len(e["text"]) > 300 else "")}
+                 for e in p["recent_feedback"]]
+        body += _feedback_block(shown)
+        for e in shown:
+            text += f"  [{_fmt(e['at'])}] {e['topic']}: {e['text']}\n"
+        if p["feedback_total"] > len(shown):
+            more = f"Showing latest {len(shown)} of {p['feedback_total']}."
+            body += f'<p style="font-size:12px;color:#6b7785;margin:0 0 12px 0;">{more}</p>'
+            text += f"  {more}\n"
+
+    html = _wrap(subject, _header("Daily insights digest", date_label), body,
+                 "Sent to the owner only. Contains recipient addresses and feedback.")
+    return subject, text, html
 
 
 def render_page(title: str, body_html: str) -> str:

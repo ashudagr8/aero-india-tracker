@@ -41,8 +41,8 @@ def test_full_flow_generate_feedback_revise_approve_send():
     calls, mails = [], []
     send = lambda subject, text, html: mails.append((subject, text, html)) or True
 
-    insight, summary = insights.prepare_insight(make_llm(calls), send, store)
-    assert insight is None and summary["generated"] == 2 and len(mails) == 2
+    summary = insights.prepare_insight(make_llm(calls), send, store)
+    assert summary["generated"] == 2 and len(mails) == 2
 
     # Re-running does not regenerate or re-send reviews
     insights.prepare_insight(make_llm(calls), send, store)
@@ -69,11 +69,10 @@ def test_full_flow_generate_feedback_revise_approve_send():
     assert store.data[insights.ARTICLES_BLOB]["q1"]["status"] == "pending"  # GET has no side effects
     insights.handle_action("POST", approve, store)
 
-    insight, _ = insights.prepare_insight(make_llm(calls), send, store)
-    assert insight["id"] == "q1"
-    insights.mark_sent("q1", store)
-    insight, _ = insights.prepare_insight(make_llm(calls), send, store)
-    assert insight is None
+    insights.prepare_insight(make_llm(calls), send, store)
+    assert insights.next_insight("a@x.com", store)["id"] == "q1"
+    insights.mark_sent("q1", "a@x.com", store)
+    assert insights.next_insight("a@x.com", store) is None
 
 
 def test_bad_signature_and_revision_cap(monkeypatch):
@@ -149,3 +148,38 @@ def test_topic_instructions_in_generation_and_revision():
 def test_instructions_are_capped():
     store = FakeStore([{"id": "a", "topic": "A", "instructions": "x" * 5000}])
     assert len(insights.load_topics(store)[0]["instructions"]) == insights.INSTRUCTIONS_MAX_CHARS
+
+
+def approved_store(n, **extra):
+    store = FakeStore([])
+    store.data[insights.ARTICLES_BLOB] = {
+        f"q{i}": {"topic": f"T{i}", "answer": f"A{i}", "status": "approved",
+                  "approved_at": f"2026-01-0{i}", "revision": 1, **extra}
+        for i in range(1, n + 1)}
+    return store
+
+
+def test_per_recipient_progress_and_late_joiner():
+    store = approved_store(3)
+    assert insights.next_insight("a@x.com", store)["id"] == "q1"
+    insights.mark_sent("q1", "a@x.com", store)
+    assert insights.next_insight("a@x.com", store)["id"] == "q2"
+    # Late joiner starts from the beginning; the first recipient is unaffected
+    assert insights.next_insight("b@y.com", store)["id"] == "q1"
+    assert insights.next_insight("a@x.com", store)["id"] == "q2"
+    assert insights.unsent_count(["a@x.com", "b@y.com"], store) == 3
+    for q in ("q1", "q2", "q3"):
+        insights.mark_sent(q, "a@x.com", store)
+        insights.mark_sent(q, "b@y.com", store)
+    assert insights.unsent_count(["a@x.com", "b@y.com"], store) == 0
+
+
+def test_legacy_sent_migrates_to_current_recipients():
+    store = approved_store(2)
+    arts = store.data[insights.ARTICLES_BLOB]
+    arts["q1"]["status"], arts["q1"]["sent_at"] = "sent", "2026-02-01"
+    insights.prepare_insight(make_llm([]), lambda *a: True, store, recipients=["a@x.com"])
+    arts = store.data[insights.ARTICLES_BLOB]
+    assert arts["q1"]["status"] == "approved" and arts["q1"]["sent_to"] == {"a@x.com": "2026-02-01"}
+    assert insights.next_insight("a@x.com", store)["id"] == "q2"
+    assert insights.next_insight("new@z.com", store)["id"] == "q1"

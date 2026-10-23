@@ -3,7 +3,7 @@
 Topics live in `topics.json` and articles in `articles.json` inside a GCS bucket, so new
 insights are added by editing data, not code.
 
-Article status: pending -> approved -> sent
+Article status: pending -> approved (delivery tracked per recipient in `sent_to`)
                 pending -> revision_requested -> (LLM rewrite) -> pending (revision + 1)
                 pending -> abandoned (discarded)
 """
@@ -16,6 +16,7 @@ import threading
 from datetime import datetime, timezone
 from html import escape
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import email_templates as tpl
 
@@ -115,6 +116,16 @@ class GcsStore:
             json.dumps(data, indent=2, ensure_ascii=False), content_type="application/json"
         )
 
+    def append_text(self, name: str, text: str) -> None:
+        # GCS objects are immutable: read-modify-write, serialized by STATE_LOCK
+        blob = self._bucket.blob(name)
+        existing = blob.download_as_text() if blob.exists() else ""
+        blob.upload_from_string(existing + text, content_type="text/plain; charset=utf-8")
+
+    def read_text(self, name: str) -> str:
+        blob = self._bucket.blob(name)
+        return blob.download_as_text() if blob.exists() else ""
+
 
 class LocalStore:
     """Same interface as GcsStore, backed by a local folder (for local runs)."""
@@ -136,6 +147,19 @@ class LocalStore:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         os.replace(tmp, path)
+
+    def append_text(self, name: str, text: str) -> None:
+        path = os.path.join(self._dir, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text)
+
+    def read_text(self, name: str) -> str:
+        path = os.path.join(self._dir, name)
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
 
 
 def default_store():
@@ -180,6 +204,64 @@ def _valid_sig(action, article_id, revision, sig) -> bool:
     return hmac.compare_digest(_sign(action, article_id, revision), sig or "")
 
 
+# ---- recipient feedback ----------------------------------------------------------------------
+
+def recipient_token(email: str) -> str:
+    """Opaque, stable id for a recipient; the address itself never appears in links."""
+    return hashlib.sha256(email.strip().lower().encode()).hexdigest()[:16]
+
+
+def _sign_recipient(token: str, article_id: str) -> str:
+    msg = f"recipient-feedback:{token}:{article_id}".encode()
+    return hmac.new(os.environ["APPROVAL_SECRET"].encode(), msg, hashlib.sha256).hexdigest()
+
+
+def recipient_feedback_link(email: str, article_id) -> str:
+    token, aid = recipient_token(email), article_id or "none"
+    query = urlencode({"action": "feedback", "r": token, "a": aid,
+                       "sig": _sign_recipient(token, aid)})
+    base = os.environ["PUBLIC_URL"]
+    return f"{base}{'&' if '?' in base else '?'}{query}"
+
+
+def handle_recipient_feedback(method: str, params, recipients, store=None):
+    """Returns (html, status). GET renders the form; POST appends to the recipient's own file."""
+    token, aid, sig = params.get("r", ""), params.get("a", ""), params.get("sig", "")
+    if not token or not aid or not hmac.compare_digest(_sign_recipient(token, aid), sig):
+        return tpl.render_page("Invalid link", "<p>This link is not valid.</p>"), 403
+    email = next((r for r in recipients if recipient_token(r) == token), None)
+    if not email:
+        return tpl.render_page("Link no longer valid", "<p>This link is no longer active.</p>"), 410
+
+    if method != "POST":
+        hidden = "".join(
+            f'<input type="hidden" name="{k}" value="{escape(v, quote=True)}">'
+            for k, v in (("action", "feedback"), ("r", token), ("a", aid), ("sig", sig)))
+        body = (f'<form method="post">{hidden}<p><label>Your feedback<br>'
+                f'<textarea name="feedback" rows="6" required maxlength="{FEEDBACK_MAX_CHARS}" '
+                'style="width:100%;margin-top:6px;"></textarea></label></p>'
+                '<button type="submit" style="background:#0b5cad;color:#fff;border:0;border-radius:6px;'
+                'padding:12px 22px;font-size:15px;cursor:pointer;">Send feedback</button></form>')
+        return tpl.render_page("Send feedback", body), 200
+
+    text = (params.get("feedback") or "").strip()
+    if len(text) > FEEDBACK_MAX_CHARS:
+        return tpl.render_page(
+            "Too long", f"<p>Please keep feedback under {FEEDBACK_MAX_CHARS} characters.</p>"), 413
+    if not text:
+        return tpl.render_page("Feedback required", "<p>Please write some feedback.</p>"), 400
+
+    store = store or default_store()
+    with STATE_LOCK:
+        topic = "none"
+        if aid != "none":
+            art = store.load(ARTICLES_BLOB, {}).get(aid)
+            topic = " ".join(art["topic"].split()) if art else "unknown"
+        entry = f"[{_now()}] recipient={email} article={aid} topic={topic}\n{text}\n\n"
+        store.append_text(f"feedback/{token}.txt", entry)
+    return tpl.render_page("Thank you", "<p>Your feedback was saved.</p>"), 200
+
+
 # ---- generation / revision -------------------------------------------------------------------
 
 def _new_article(topic: str, answer: str, instructions: str = "") -> dict:
@@ -213,13 +295,14 @@ def _send_review(article_id: str, article: dict, send_email) -> bool:
     return send_email(f"{prefix}: {article['topic'][:80]}", text, html)
 
 
-def prepare_insight(call_llm, send_email, store=None):
-    """Generate/revise drafts, send review emails, and return the next approved insight (or None)."""
+def prepare_insight(call_llm, send_email, store=None, recipients=()):
+    """Generate/revise drafts and send review emails. Returns a summary dict."""
     store = store or default_store()
     topics = load_topics(store)
     articles = store.load(ARTICLES_BLOB, {})
     budget = _env_int("MAX_NEW_ARTICLES_PER_RUN", 3)
     summary = {"generated": 0, "revised": 0, "reviews_sent": 0, "errors": []}
+    _migrate_legacy(articles, recipients)
 
     def guarded(label, fn):
         try:
@@ -261,22 +344,124 @@ def prepare_insight(call_llm, send_email, store=None):
 
     store.save(ARTICLES_BLOB, articles)
 
-    approved = sorted(((a.get("approved_at", ""), aid) for aid, a in articles.items()
-                       if a["status"] == "approved"))
-    insight = None
-    if approved:
-        aid = approved[0][1]
-        insight = {"id": aid, "topic": articles[aid]["topic"], "answer": articles[aid]["answer"]}
-    return insight, summary
+    return summary
 
 
-def mark_sent(insight_id: str, store=None) -> None:
+def _migrate_legacy(articles: dict, recipients) -> bool:
+    """Legacy `status: sent` articles count as already delivered to the current recipients."""
+    changed = False
+    for art in articles.values():
+        if art.get("status") == "sent":
+            art["status"] = "approved"
+            art.setdefault("sent_to", {}).update(
+                {r: art.get("sent_at") or _now() for r in recipients})
+            changed = True
+    return changed
+
+
+def next_insight(recipient: str, store=None):
+    """Oldest approved article not yet sent to `recipient`, or None."""
     store = store or default_store()
     articles = store.load(ARTICLES_BLOB, {})
-    if insight_id in articles and articles[insight_id]["status"] == "approved":
-        articles[insight_id]["status"] = "sent"
-        articles[insight_id]["sent_at"] = _now()
+    candidates = sorted((a.get("approved_at", ""), aid) for aid, a in articles.items()
+                        if a["status"] == "approved" and recipient not in a.get("sent_to", {}))
+    if not candidates:
+        return None
+    aid = candidates[0][1]
+    return {"id": aid, "topic": articles[aid]["topic"], "answer": articles[aid]["answer"]}
+
+
+def mark_sent(insight_id: str, recipient: str, store=None) -> None:
+    store = store or default_store()
+    articles = store.load(ARTICLES_BLOB, {})
+    art = articles.get(insight_id)
+    if art and art["status"] == "approved":
+        art.setdefault("sent_to", {})[recipient] = _now()
         store.save(ARTICLES_BLOB, articles)
+
+
+def unsent_count(recipients, store=None) -> int:
+    """Approved articles not yet sent to every recipient."""
+    store = store or default_store()
+    return sum(1 for a in store.load(ARTICLES_BLOB, {}).values()
+               if a["status"] == "approved" and any(r not in a.get("sent_to", {}) for r in recipients))
+
+
+# ---- daily owner digest ----------------------------------------------------------------------
+
+IST = ZoneInfo("Asia/Kolkata")
+DIGEST_RECENT_FEEDBACK = 5
+_FEEDBACK_HEADER = re.compile(
+    r"^\[(?P<ts>[^\]]+)\] recipient=(?P<email>\S+) article=(?P<aid>\S+) topic=(?P<topic>.*)$")
+
+
+def low_stock_threshold() -> int:
+    return _env_int("LOW_STOCK_THRESHOLD", 3)
+
+
+def _to_ist(ts):
+    try:
+        dt = datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST)
+
+
+def parse_feedback(text: str) -> list:
+    """Parse a recipient feedback file into entries; text before a valid header is skipped."""
+    entries, current = [], None
+    for line in (text or "").splitlines():
+        m = _FEEDBACK_HEADER.match(line)
+        if m:
+            current = {"at": _to_ist(m["ts"]), "article": m["aid"], "topic": m["topic"], "lines": []}
+            entries.append(current)
+        elif current is not None:
+            current["lines"].append(line)
+    for e in entries:
+        e["text"] = "\n".join(e.pop("lines")).strip()
+    return entries
+
+
+def build_digest(recipients, store=None, now=None) -> dict:
+    """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day."""
+    store = store or default_store()
+    now = (now or datetime.now(timezone.utc)).astimezone(IST)
+    today = now.date()
+    articles = store.load(ARTICLES_BLOB, {})
+    topics = load_topics(store)
+    approved = {aid: a for aid, a in articles.items() if a.get("status") == "approved"}
+
+    people, new_feedback = [], []
+    for email in recipients:
+        sent = {aid: (_to_ist(a.get("sent_to", {}).get(email))) for aid, a in approved.items()
+                if email in a.get("sent_to", {})}
+        entries = parse_feedback(store.read_text(f"feedback/{recipient_token(email)}.txt"))
+        todays = [e for e in entries if e["at"] and e["at"].date() == today]
+        last_sent = max((d for d in sent.values() if d), default=None)
+        people.append({
+            "email": email,
+            "received": len(sent),
+            "received_today": sum(1 for d in sent.values() if d and d.date() == today),
+            "remaining": len(approved) - len(sent),
+            "last_sent": last_sent,
+            "feedback_total": len(entries),
+            "feedback_today": len(todays),
+            "recent_feedback": entries[-DIGEST_RECENT_FEEDBACK:][::-1],
+        })
+        new_feedback += [{**e, "email": email} for e in todays]
+
+    return {
+        "now": now,
+        "threshold": low_stock_threshold(),
+        "approved": len(approved),
+        "pending": sum(1 for a in articles.values() if a.get("status") in ("pending", "revision_requested")),
+        "undrafted": sum(1 for t in topics if t["id"] not in articles),
+        "people": people,
+        "new_feedback": sorted(new_feedback, key=lambda e: e["at"]),
+        "low_stock": any(p["remaining"] <= low_stock_threshold() for p in people),
+    }
 
 
 # ---- approval web actions --------------------------------------------------------------------

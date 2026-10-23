@@ -1,6 +1,7 @@
 import os
 import re
 import csv
+import hmac
 import random
 import time
 import smtplib
@@ -31,7 +32,6 @@ WEBSITE_URL = "https://aeroindia.gov.in/visit"
 
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
-NOTIFY_EMAIL_TO = os.environ.get("NOTIFY_EMAIL_TO", GMAIL_ADDRESS)
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "ollama").strip().lower()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL")
@@ -170,15 +170,26 @@ workflow.add_edge("answer_question", END)
 workflow.add_edge("use_cached_answer", END)
 app = workflow.compile()
 
-def send_email(subject: str, text: str, html: str) -> bool:
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not NOTIFY_EMAIL_TO:
+def notify_recipients() -> list[str]:
+    raw = os.environ.get("NOTIFY_EMAIL_TO", GMAIL_ADDRESS) or ""
+    seen, result = set(), []
+    for addr in raw.split(","):
+        addr = addr.strip()
+        if addr and addr.lower() not in seen:
+            seen.add(addr.lower())
+            result.append(addr)
+    return result
+
+def send_email(to: str, subject: str, text: str, html: str) -> bool:
+    """Send one message addressed only to `to` (no Cc/Bcc)."""
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not to:
         print("Email not sent: Environment credentials missing.")
         return False
 
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
     message["From"] = GMAIL_ADDRESS
-    message["To"] = NOTIFY_EMAIL_TO
+    message["To"] = to
     message.attach(MIMEText(text, "plain", "utf-8"))
     message.attach(MIMEText(html, "html", "utf-8"))
 
@@ -186,31 +197,94 @@ def send_email(subject: str, text: str, html: str) -> bool:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as smtp:
             smtp.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
             smtp.send_message(message)
-        print(f"Email notification sent to {NOTIFY_EMAIL_TO}.")
         return True
     except Exception as exc:
-        print(f"Email notification failed: {exc}")
+        print(f"Email notification failed: {type(exc).__name__}")
         return False
 
-def send_result_email(run_time: str, verdict: str, content_changed: str, insight: dict | None = None) -> bool:
-    status = "Started Now" if verdict.lower() == "yes" else "Not Started"
-    subject = f"Aero India General Visitor Registration: {status}"
+def send_review_email(subject: str, text: str, html: str) -> bool:
+    return send_email(GMAIL_ADDRESS, subject, text, html)
+
+def send_result_email(to: str, run_time: str, verdict: str, content_changed: str, insight: dict | None = None) -> bool:
+    feedback_url = (insights.recipient_feedback_link(to, insight["id"] if insight else None)
+                    if insights.insights_enabled() else None)
+    status = {
+        "yes": "Started Now",
+        "no": "Not Started Yet",
+        "unknown": "Status Unclear",
+    }.get(verdict.lower(), "Status Unclear")
+    subject = "Aero India"
+    if insight:
+        subject += " | New Insight Available"
+    subject += f" | Registration: {status}"
     text, html = email_templates.render_notification(
         run_time, verdict, content_changed, WEBSITE_NAME, WEBSITE_URL,
-        insight=insight,
+        insight=insight, feedback_url=feedback_url,
     )
-    return send_email(subject, text, html)
+    return send_email(to, subject, text, html)
+
+def notify_all(run_time: str, verdict: str, content_changed: str, use_insights: bool) -> tuple[int, int, list]:
+    """One private message per recipient, each with its own next insight. Returns (sent, total, insight ids)."""
+    recipients = notify_recipients()
+    sent, included = 0, []
+    for to in recipients:
+        insight = None
+        if use_insights:
+            try:
+                insight = insights.next_insight(to)
+            except Exception as e:
+                print(f"Next insight lookup failed: {type(e).__name__}")
+        if send_result_email(to, run_time, verdict, content_changed, insight):
+            sent += 1
+            if insight:
+                included.append(insight["id"])
+                try:
+                    insights.mark_sent(insight["id"], to)
+                except Exception as e:
+                    print(f"Failed to mark insight sent: {type(e).__name__}")
+    print(f"Email notification sent to {sent} of {len(recipients)} recipients.")
+    return sent, len(recipients), included
+
+def send_digest() -> dict:
+    """Build and email the owner digest. Read-only with respect to insight state."""
+    with insights.STATE_LOCK:
+        digest = insights.build_digest(notify_recipients())
+    subject, text, html = email_templates.render_digest(digest)
+    return {
+        "status": "success",
+        "sent": send_review_email(subject, text, html),
+        "recipients": len(digest["people"]),
+        "new_feedback": len(digest["new_feedback"]),
+        "low_stock": digest["low_stock"],
+    }
 
 # HTTP entry point for Google Cloud Functions Framework
 @functions_framework.http
 def aero_india_tracker(request):
+    if request.path == "/digest":
+        expected = os.environ.get("DIGEST_TOKEN", "")
+        supplied = request.headers.get("X-Digest-Token") or request.args.get("token", "")
+        if not expected or not hmac.compare_digest(supplied, expected):
+            return {"status": "unauthorized"}, 401
+        if not insights.insights_enabled():
+            return {"status": "disabled"}, 200
+        try:
+            return send_digest(), 200
+        except Exception as e:
+            print(f"Digest failed: {type(e).__name__}")
+            return {"status": "error"}, 500
+
     # Browsers also request /favicon.ico etc.; those must not trigger a run (or send emails)
     if request.path not in ("", "/"):
         return "Not found", 404
 
     if request.args.get("action") or request.form.get("action"):
         try:
-            html, status = insights.handle_action(request.method, request.values)
+            if request.values.get("action") == "feedback" and request.values.get("r"):
+                html, status = insights.handle_recipient_feedback(
+                    request.method, request.values, notify_recipients())
+            else:
+                html, status = insights.handle_action(request.method, request.values)
         except Exception as e:
             print(f"Approval action failed: {e}")
             html, status = email_templates.render_page("Error", "<p>Something went wrong.</p>"), 500
@@ -234,23 +308,19 @@ def aero_india_tracker(request):
         ist_time = datetime.now(ZoneInfo("Asia/Kolkata"))
         run_time = ist_time.strftime("%d/%m/%y %I:%M %p IST")
 
-        insight, insight_summary = None, None
+        insight_summary = None
         # One run at a time per instance, so overlapping requests cannot draft or send twice
         with insights.STATE_LOCK:
             if insights.insights_enabled():
                 try:
-                    insight, insight_summary = insights.prepare_insight(call_llm, send_email)
+                    insight_summary = insights.prepare_insight(call_llm, send_review_email, recipients=notify_recipients())
                 except Exception as e:
                     # Insights must never block the registration notification
                     print(f"Insights step failed: {e}")
                     insight_summary = {"errors": [str(e)]}
 
-            sent = send_result_email(run_time, verdict, content_changed, insight)
-            if sent and insight:
-                try:
-                    insights.mark_sent(insight["id"])
-                except Exception as e:
-                    print(f"Failed to mark insight sent: {e}")
+            sent_count, total, included = notify_all(
+                run_time, verdict, content_changed, insights.insights_enabled())
 
         return {
             "status": "success",
@@ -258,7 +328,8 @@ def aero_india_tracker(request):
             "verdict": verdict,
             "content_changed": content_changed,
             "answer": result["answer"],
-            "insight_included": insight["id"] if insight and sent else None,
+            "insights_included": len(included),
+            "recipients": {"sent": sent_count, "total": total},
             "insights": insight_summary,
         }, 200
 
