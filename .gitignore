@@ -21,6 +21,9 @@ env/
 run_log.csv
 scraped_text.txt
 llm_answer.txt
+plan.md
+IMPLEMENTATION_PLAN.md
+.local-articles/
 
 # Editor / OS
 .idea/
