@@ -16,11 +16,11 @@ env/
 *.key
 
 # Local run output
+.local-articles/
 *.log
 run_log.csv
 scraped_text.txt
 llm_answer.txt
-.local-articles/
 
 # Editor / OS
 .idea/

@@ -5,6 +5,7 @@ An HTTP-triggered Google Cloud Function that watches the Aero India visitor regi
 ## Table of Contents
 
 * [Architecture](#architecture)
+* [Insights (human-approved articles)](#insights-human-approved-articles)
 * [Environment variables](#environment-variables)
 * [Directory contents](#directory-contents)
 * [Notes](#notes)
@@ -32,7 +33,54 @@ START -> scrape_webpage --(changed)---> answer_question ----+
 | `answer_question` | Sends the page text and question to the LLM, which replies starting with `Verdict: Yes/No/Unknown`. Uses OpenRouter (with fallback models) or Ollama. Caches the answer and page text only when the verdict is not `Unknown`, so failed runs are retried. |
 | `use_cached_answer` | Returns the answer from `/tmp/llm_answer.txt`. |
 
-After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<think>` blocks). `send_result_email` sends a Gmail SMTP message with the subject "Started Now" or "Not Started". The function returns JSON with `status`, `run_time` (IST), `verdict`, `content_changed` and `answer`. Any exception returns HTTP 500 with an error message.
+After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<think>` blocks). `send_result_email` sends a Gmail SMTP message (HTML with a plain-text alternative, status badge and a button to the registration page). Its subject reports registration status (`Started Now`, `Not Started Yet` or `Status Unclear`) and adds `New Insight Available` when that recipient's email includes an approved insight. The function returns JSON with `status`, `run_time` (IST), `verdict`, `content_changed` and `answer`. Any exception returns HTTP 500 with an error message.
+
+## Insights (human-approved articles)
+
+Optional "Insight of the day" section in the notification email. You define topics, the LLM writes an article on each, and **you approve each article** before it is emailed. Adding an article needs no code change.
+
+1. Create a Cloud Storage bucket and upload a `topics.json` (see `topics.example.json`, 10 seed topics). Entries are `{"id": "...", "topic": "...", "instructions": "..."}` or plain strings. Append new topics at any time. `instructions` is optional (see below).
+2. Each run, the LLM drafts articles for topics that have no article yet (at most `MAX_NEW_ARTICLES_PER_RUN` per run) and emails you a review message with **Approve**, **Request changes** and **Discard** buttons. State is kept in `articles.json` in the same bucket.
+3. The buttons open a confirmation page on the function URL (`PUBLIC_URL`); nothing changes until you press the confirm button, so email link scanners cannot approve by accident. Links are HMAC-signed (`APPROVAL_SECRET`) and tied to the draft revision, so links to an older draft stop working.
+4. **Request changes** asks for feedback. On the next run the LLM rewrites the draft using the topic, the previous draft and your feedback, then re-sends a review email ("Revised (v2)"). After `MAX_REVISIONS` revisions only Approve/Discard remain.
+5. Approved articles are added to the notification email one per email, oldest approval first, then marked `sent`.
+
+**Per-topic instructions.** The optional `instructions` field is extra guidance for that topic only, e.g. `"Focus on its development history."`. It is appended to the built-in prompt, which still enforces length, format and accuracy rules, so instructions steer content and angle but cannot change the output format. It is capped at 2000 characters and is also used when the LLM rewrites the draft after your feedback. The text is stored with the article when it is first drafted, so editing `instructions` in `topics.json` later does not regenerate an existing article. To redraft, use **Request changes**, or delete the entry from `articles.json`.
+
+Article status: `pending` -> `approved` -> `sent`; `pending` -> `revision_requested` -> `pending` (next revision); `pending` -> `abandoned`.
+
+Set `INCLUDE_INSIGHTS=false` to turn the whole feature off (no drafting, no review emails, no insight section). It is also skipped, with a log message, if neither `ARTICLES_BUCKET` nor `ARTICLES_DIR` is set, or if `APPROVAL_SECRET` or `PUBLIC_URL` is missing. A failure in the insights step never blocks the registration notification. Requests to paths other than `/` (such as a browser's `/favicon.ico`) return 404 and do nothing, and runs are serialized within an instance so overlapping requests cannot draft or email twice. Across several instances, keep the scheduler non-overlapping or set max instances to 1.
+
+The service account needs read/write access to the bucket (for example `roles/storage.objectUser`). The function URL must be reachable from your browser for the approval links.
+
+### Daily owner digest
+
+`GET <function URL>/digest` emails the owner (`GMAIL_ADDRESS` only) a report built from the bucket, so function restarts do not affect it. It is read-only and is sent every day, even when nothing happened. It contains:
+
+- Stock summary: approved insights, pending review, topics not yet drafted, and a LOW STOCK warning (also added to the subject) when any recipient has `LOW_STOCK_THRESHOLD` or fewer insights left.
+- Per recipient: insights received, received today, remaining, last sent (IST) and feedback counts.
+- New feedback received today (IST calendar day), in full.
+- Overall feedback per recipient: total count plus the latest 5 entries (each truncated to 300 characters).
+
+The request must send the token as the `X-Digest-Token` header (preferred) or `?token=` query parameter; a missing or wrong token returns 401 and sends nothing. Example Cloud Scheduler job, end of day IST:
+
+```
+gcloud scheduler jobs create http insights-digest --schedule="30 21 * * *" --time-zone="Asia/Kolkata" \
+  --uri="<function URL>/digest" --http-method=GET --headers="X-Digest-Token=<DIGEST_TOKEN>"
+```
+
+The digest contains recipient addresses and feedback, so it goes to the owner only.
+
+### Re-sending insights (`/reset`)
+
+`POST <function URL>/reset` clears delivery history so approved articles are sent again from the oldest. Requires header `X-Reset-Token` equal to `RESET_TOKEN` (route is disabled if unset; GET returns 405). Add `-d email=<address>` to reset one recipient only (case-insensitive); otherwise all recipients are reset. Article content, approvals and feedback are untouched, and a backup `articles.backup-<UTC timestamp>.json` is saved in the bucket first (delete old ones manually). The digest will then show full remaining stock.
+
+```
+curl -X POST -H "X-Reset-Token: <RESET_TOKEN>" "<function URL>/reset"
+curl -X POST -H "X-Reset-Token: <RESET_TOKEN>" -d email=a@example.com "<function URL>/reset"
+```
+
+Avoid running it while a notification run is in progress.
 
 ## Environment variables
 
@@ -46,7 +94,17 @@ After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<th
 | `OLLAMA_MODEL` | No (default `qwen3:4b`) | Ollama model name |
 | `GMAIL_ADDRESS` | For email | Sender Gmail address |
 | `GMAIL_APP_PASSWORD` | For email | Gmail app password |
-| `NOTIFY_EMAIL_TO` | No (defaults to `GMAIL_ADDRESS`) | Recipient address |
+| `NOTIFY_EMAIL_TO` | No (defaults to `GMAIL_ADDRESS`) | Recipient address(es), comma-separated; each gets a separate private message (review emails go only to `GMAIL_ADDRESS`) |
+| `INCLUDE_INSIGHTS` | No (default `true`) | `false` disables the insights feature |
+| `DIGEST_TOKEN` | For `/digest` | Shared secret required to call the daily digest route |
+| `RESET_TOKEN` | For `/reset` | Shared secret required to call the reset route (POST only) |
+| `LOW_STOCK_THRESHOLD` | No (default `3`) | Remaining-insights level at or below which the digest warns of low stock |
+| `ARTICLES_BUCKET` | For insights (or `ARTICLES_DIR`) | Bucket holding `topics.json` and `articles.json` |
+| `ARTICLES_DIR` | Local runs only | Local folder holding the same two files instead of a bucket, e.g. `./.local-articles`. Takes precedence over `ARTICLES_BUCKET`. Not suitable for Cloud Run (ephemeral disk). |
+| `APPROVAL_SECRET` | For insights | Secret used to sign approval links |
+| `PUBLIC_URL` | For insights | Public URL of this function, used in approval links |
+| `MAX_NEW_ARTICLES_PER_RUN` | No (default `3`) | Max LLM drafts/revisions per run |
+| `MAX_REVISIONS` | No (default `3`) | Max versions of one article before only approve/discard |
 
 If the Gmail variables are missing, the function still runs but sends no email.
 
@@ -61,6 +119,10 @@ gcloud run services update aero-india-tracker \
 ## Directory contents
 
 * `main.py` - the function code and LangGraph workflow
+* `insights.py` - topic/article storage, LLM drafting and revision, signed approval actions
+* `email_templates.py` - HTML and plain-text email templates
+* `topics.example.json` - 10 seed topics to upload as `topics.json`
+* `tests/` - unit tests (`python -m pytest tests`)
 * `requirements.txt` - pinned dependencies
 * `.gcloudignore` - keeps `.venv`, caches and editor files out of the deploy bundle
 * `.vscode/launch.json` - Cloud Code deploy and local debug configurations
@@ -104,6 +166,15 @@ export GMAIL_APP_PASSWORD=<app password>
 ```
 
 Do not commit keys. `.env` files are already in `.gitignore`.
+
+To try insights locally without a bucket, use a folder:
+
+```bash
+mkdir -p .local-articles && cp topics.example.json .local-articles/topics.json
+export ARTICLES_DIR=./.local-articles
+export APPROVAL_SECRET=any-long-random-string
+export PUBLIC_URL=http://localhost:8000
+```
 
 ### Run and debug locally
 
