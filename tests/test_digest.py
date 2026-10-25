@@ -161,3 +161,11 @@ def test_digest_disabled_without_insights(env, sent, monkeypatch):
 
 def test_other_paths_still_404(env, sent):
     assert call("/other")[1] == 404
+
+
+def test_vote_tally_in_digest(env):
+    env.save(insights.VOTES_BLOB, {"a1": {"x": {"vote": "up"}, "y": {"vote": "up"}, "z": {"vote": "down"}}})
+    d = insights.build_digest([A], env, NOW)
+    assert d["votes"] == [{"article": "a1", "topic": "T1", "up": 2, "down": 1}]
+    _, text, html = email_templates.render_digest(d)
+    assert "T1: up 2, down 1" in text and "Insight votes" in html

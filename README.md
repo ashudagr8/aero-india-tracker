@@ -33,7 +33,7 @@ START -> scrape_webpage --(changed)---> answer_question ----+
 | `answer_question` | Sends the page text and question to the LLM, which replies starting with `Verdict: Yes/No/Unknown`. Uses OpenRouter (with fallback models) or Ollama. Caches the answer and page text only when the verdict is not `Unknown`, so failed runs are retried. |
 | `use_cached_answer` | Returns the answer from `/tmp/llm_answer.txt`. |
 
-After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<think>` blocks). `send_result_email` sends a Gmail SMTP message (HTML with a plain-text alternative, status badge and a button to the registration page). Its subject reports registration status (`Started Now`, `Not Started Yet` or `Status Unclear`) and adds `New Insight Available` when that recipient's email includes an approved insight. The function returns JSON with `status`, `run_time` (IST), `verdict`, `content_changed` and `answer`. Any exception returns HTTP 500 with an error message.
+After the graph runs, `parse_verdict` extracts Yes, No or Unknown (ignoring `<think>` blocks). `send_result_email` sends a Gmail SMTP message (HTML with a plain-text alternative). The email opens with a slim status strip (status badge, run time and a link to the registration page), followed, when the recipient has an approved insight, by a "Today's spotlight · Bonus" card that leads with the article's first paragraph as a teaser. The subject is `Aero India | New Insight | Registration: Not Started` (or `Unclear`; `New Insight` is omitted when there is no insight). When registration has started the status leads so phones do not cut it off: `🔔 Registration OPEN | Aero India | New Insight`. At the end of the insight card are large 👍 Useful / 👎 Not for me buttons and a comment link. A click opens a confirmation page (so mail scanners cannot cast votes) and the vote is recorded on submit in `votes.json` (one vote per recipient per article, last wins; an optional comment is also saved to that recipient's feedback file). The digest shows 👍/👎 totals per article. the preheader is the insight's first sentence. The function returns JSON with `status`, `run_time` (IST), `verdict`, `content_changed` and `answer`. Any exception returns HTTP 500 with an error message.
 
 ## Insights (human-approved articles)
 
@@ -60,6 +60,7 @@ The service account needs read/write access to the bucket (for example `roles/st
 - Stock summary: approved insights, pending review, topics not yet drafted, and a LOW STOCK warning (also added to the subject) when any recipient has `LOW_STOCK_THRESHOLD` or fewer insights left.
 - Per recipient: insights received, received today, remaining, last sent (IST) and feedback counts.
 - New feedback received today (IST calendar day), in full.
+- Thumbs up/down totals per insight.
 - Overall feedback per recipient: total count plus the latest 5 entries (each truncated to 300 characters).
 
 The request must send the token as the `X-Digest-Token` header (preferred) or `?token=` query parameter; a missing or wrong token returns 401 and sends nothing. Example Cloud Scheduler job, end of day IST:

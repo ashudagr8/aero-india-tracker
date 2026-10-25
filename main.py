@@ -206,20 +206,17 @@ def send_review_email(subject: str, text: str, html: str) -> bool:
     return send_email(GMAIL_ADDRESS, subject, text, html)
 
 def send_result_email(to: str, run_time: str, verdict: str, content_changed: str, insight: dict | None = None) -> bool:
+    enabled = insights.insights_enabled()
     feedback_url = (insights.recipient_feedback_link(to, insight["id"] if insight else None)
-                    if insights.insights_enabled() else None)
-    status = {
-        "yes": "Started Now",
-        "no": "Not Started Yet",
-        "unknown": "Status Unclear",
-    }.get(verdict.lower(), "Status Unclear")
-    subject = "Aero India"
-    if insight:
-        subject += " | New Insight Available"
-    subject += f" | Registration: {status}"
+                    if enabled else None)
+    up_url = down_url = None
+    if enabled and insight:
+        up_url = insights.vote_link(to, insight["id"], "up")
+        down_url = insights.vote_link(to, insight["id"], "down")
+    subject = email_templates.notification_subject(verdict, bool(insight))
     text, html = email_templates.render_notification(
         run_time, verdict, content_changed, WEBSITE_NAME, WEBSITE_URL,
-        insight=insight, feedback_url=feedback_url,
+        insight=insight, feedback_url=feedback_url, vote_up_url=up_url, vote_down_url=down_url,
     )
     return send_email(to, subject, text, html)
 
@@ -301,7 +298,10 @@ def aero_india_tracker(request):
 
     if request.args.get("action") or request.form.get("action"):
         try:
-            if request.values.get("action") == "feedback" and request.values.get("r"):
+            if request.values.get("action") == "vote" and request.values.get("r"):
+                html, status = insights.handle_vote(
+                    request.method, request.values, notify_recipients())
+            elif request.values.get("action") == "feedback" and request.values.get("r"):
                 html, status = insights.handle_recipient_feedback(
                     request.method, request.values, notify_recipients())
             else:

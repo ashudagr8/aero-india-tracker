@@ -79,3 +79,48 @@ def test_too_long_and_escaping(env):
     p2["sig"] = insights._sign_recipient(p["r"], p2["a"])
     html, status = get(p2)[:2]
     assert status == 200 and "<script>" not in html and "&lt;script&gt;" in html
+
+
+def vote_params(email, vote, aid="art1"):
+    return params(insights.vote_link(email, aid, vote))
+
+
+def test_vote_links_and_thumbs_in_email(env, monkeypatch):
+    sent = {}
+    monkeypatch.setattr(main, "send_email", lambda to, s, t, h: sent.setdefault(to, (t, h)) or True)
+    main.notify_all("now", "No", "No", True)
+    text, html = sent[A]
+    assert "action=vote" in text and "v=up" in text and "v=down" in text
+    assert "Was this insight useful?" in html and "Useful" in html and "Not for me" in html
+    assert A not in text
+
+
+def test_vote_get_does_not_record_post_does(env):
+    p = vote_params(A, "up")
+    html, status = get(p)[:2]
+    assert status == 200 and "Submit" in html
+    assert not (env / insights.VOTES_BLOB).exists()
+    assert post(p, "")[1] == 200
+    votes = insights.LocalStore(str(env)).load(insights.VOTES_BLOB, {})
+    assert votes["art1"][insights.recipient_token(A)]["vote"] == "up"
+    assert not (env / "feedback").exists()
+
+
+def test_vote_last_wins_one_per_recipient_and_comment(env):
+    post(vote_params(A, "up"), "")
+    post(vote_params(A, "down"), "too basic")
+    post(vote_params(B, "up"), "")
+    votes = insights.LocalStore(str(env)).load(insights.VOTES_BLOB, {})["art1"]
+    assert {k: v["vote"] for k, v in votes.items()} == {
+        insights.recipient_token(A): "down", insights.recipient_token(B): "up"}
+    fa = (env / "feedback" / f"{insights.recipient_token(A)}.txt").read_text()
+    assert "too basic" in fa and "Not for me" in fa
+
+
+def test_vote_tampering_rejected(env):
+    p = vote_params(A, "up")
+    assert post({**p, "v": "down"}, "")[1] == 403
+    assert post({**p, "a": "other"}, "")[1] == 403
+    assert post({**p, "v": "sideways"}, "")[1] == 403
+    assert post({**p, "r": insights.recipient_token(B)}, "")[1] == 403
+    assert not (env / insights.VOTES_BLOB).exists()
