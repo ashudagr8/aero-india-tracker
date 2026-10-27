@@ -100,11 +100,23 @@ def test_templates_escape_and_optional_sections():
     assert "<script>" not in html and "&lt;script&gt;" in html
     assert "<strong>Bold</strong>" in html and "<li" in html
     assert "background-image" not in html and "v:rect" not in html
-    assert "Insight of the day" in html
+    assert "Today's spotlight" in html and "Bonus read" in html
 
     text, html = tpl.render_notification("now", "No", "No", "Site", "https://x")
-    assert "Insight of the day" not in html and "Insight" not in text
+    assert "spotlight" not in html.lower() and "spotlight" not in text.lower()
     assert "background-image" not in html
+
+
+def test_notification_layout_status_first_then_teaser():
+    insight = {"topic": "Su-30MKI", "answer": "First hook sentence. More.\n\nSecond paragraph."}
+    text, html = tpl.render_notification("now", "No", "No", "Site", "https://x", insight)
+    body = html.split("</div>", 1)[1]
+    assert body.index("Registration: Not Started Yet") < body.index("Today's spotlight") \
+        < body.index("First hook") < body.index("Second paragraph")
+    assert "Nothing to act on today" in html
+    assert "First hook sentence." in html.split("</div>", 1)[0]
+    assert text.index("General Visitor Registration") < text.index("Today's spotlight") \
+        < text.index("First hook") < text.index("Second paragraph")
 
 
 def test_local_store_via_env(monkeypatch, tmp_path):

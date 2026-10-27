@@ -70,16 +70,60 @@ def _wrap(preheader: str, header_html: str, body_html: str, footer: str) -> str:
     )
 
 
+SUBJECT_STATUS = {"no": "Not Started", "unknown": "Unclear"}
+
+
+def notification_subject(verdict: str, has_insight: bool = False) -> str:
+    """Started leads with the status so it survives mobile truncation; otherwise Aero India | ... format."""
+    insight = " | New Insight" if has_insight else ""
+    if verdict.lower() == "yes":
+        return f"🔔 Registration OPEN | Aero India{insight}"
+    status = SUBJECT_STATUS.get(verdict.lower(), SUBJECT_STATUS["unknown"])
+    return f"Aero India{insight} | Registration: {status}"
+
+
+def _split_hook(answer: str) -> tuple[str, str]:
+    """First paragraph is the teaser; the remainder follows it."""
+    parts = re.split(r"\n\s*\n", (answer or "").strip(), maxsplit=1)
+    return parts[0].strip(), (parts[1].strip() if len(parts) > 1 else "")
+
+
+def _first_sentence(text: str) -> str:
+    text = " ".join(text.replace("**", "").split())
+    m = re.match(r"(.+?[.!?])(\s|$)", text)
+    return m.group(1) if m else text
+
+
+def _vote_block(up_url, down_url, comment_url):
+    def cell(label, url, bg):
+        return (f'<td width="50%" style="padding:0 4px;"><a href="{escape(url, quote=True)}" '
+                f'style="display:block;background-color:{bg};color:#ffffff;text-decoration:none;'
+                'font-weight:700;font-size:16px;text-align:center;padding:14px 8px;border-radius:8px;">'
+                f"{label}</a></td>")
+    comment = (f'<div style="margin-top:10px;font-size:13px;"><a href="{escape(comment_url, quote=True)}" '
+               'style="color:#0b5cad;">Leave a comment</a></div>') if comment_url else ""
+    return (
+        '<div style="margin-top:22px;padding-top:16px;border-top:1px solid #d5e0ee;text-align:center;">'
+        f'<div style="font-size:16px;font-weight:700;color:{NAVY};margin-bottom:10px;">'
+        "Was this insight useful?</div>"
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>'
+        f'{cell("&#128077; Useful", up_url, "#1b873f")}{cell("&#128078; Not for me", down_url, "#6b7785")}'
+        f"</tr></table>{comment}</div>"
+    )
+
+
 def render_notification(run_time, verdict, content_changed, website_name, website_url,
-                        insight=None, feedback_url=None):
+                        insight=None, feedback_url=None, vote_up_url=None, vote_down_url=None):
     label, color = STATUS_STYLES.get(verdict.lower(), STATUS_STYLES["unknown"])
+    link = escape(website_url, quote=True)
     body = (
-        '<div style="font-size:13px;color:#6b7785;margin-bottom:8px;">General visitor registration</div>'
-        f'<div style="display:inline-block;background-color:{color};color:#ffffff;font-size:18px;'
-        f'font-weight:700;padding:10px 20px;border-radius:24px;">{escape(label)}</div>'
-        f'<p style="margin:18px 0 22px 0;color:#4b5563;">Website changed since last run: '
-        f"<strong>{escape(content_changed)}</strong></p>"
-        f"{_button('View registration page', website_url)}"
+        '<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#6b7785;">'
+        "Aero India Tracker</div>"
+        f'<div style="margin:8px 0 6px 0;"><span style="display:inline-block;background-color:{color};'
+        'color:#ffffff;font-size:16px;font-weight:700;padding:8px 16px;border-radius:20px;">'
+        f"Registration: {escape(label)}</span></div>"
+        f'<div style="font-size:13px;color:#6b7785;">{escape(run_time)} · page changed: '
+        f'{escape(content_changed)} · <a href="{link}" style="color:#0b5cad;">View registration page</a></div>'
     )
     text = (
         f"Aero India visitor registration update ({run_time})\n\n"
@@ -87,23 +131,35 @@ def render_notification(run_time, verdict, content_changed, website_name, websit
         f"Website changed since last run: {content_changed}\n"
         f"Page: {website_url}\n"
     )
+    preheader = f"General visitor registration: {label}"
     if insight:
+        hook, rest = _split_hook(insight["answer"])
+        bridge = ("Registration is open. Bonus read:" if verdict.lower() == "yes"
+                  else "Nothing to act on today. Here's something worth a minute:")
         body += (
-            '<div style="margin-top:30px;border-left:4px solid #0b5cad;background-color:#f3f7fc;'
+            f'<p style="margin:22px 0 0 0;color:#4b5563;">{escape(bridge)}</p>'
+            '<div style="margin-top:12px;border-left:4px solid #0b5cad;background-color:#f3f7fc;'
             'padding:18px 20px;border-radius:0 6px 6px 0;">'
             '<div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#0b5cad;'
-            'font-weight:700;">Insight of the day</div>'
-            f'<div style="font-size:18px;font-weight:700;color:{NAVY};margin:6px 0 12px 0;">'
+            'font-weight:700;">&#9992; Today\'s spotlight &middot; Bonus</div>'
+            f'<div style="font-size:20px;line-height:26px;font-weight:700;color:{NAVY};margin:6px 0 12px 0;">'
             f'{escape(insight["topic"])}</div>'
-            f'{article_to_html(insight["answer"])}</div>'
+            f'<div style="font-size:16px;line-height:24px;">{article_to_html(hook)}</div>'
+            f"{article_to_html(rest)}"
+            f"{_vote_block(vote_up_url, vote_down_url, feedback_url) if vote_up_url and vote_down_url else ''}</div>"
         )
-        text += f"\n--- Insight of the day ---\n{insight['topic']}\n\n{insight['answer']}\n"
+        text += (f"\n{bridge}\n\n--- Today's spotlight (bonus) ---\n{insight['topic']}\n\n"
+                 f"{hook}\n\n{rest}\n")
+        if vote_up_url and vote_down_url:
+            text += (f"\nWas this insight useful?\n👍 Useful: {vote_up_url}\n"
+                     f"👎 Not for me: {vote_down_url}\n")
+        preheader = _first_sentence(hook) or f"Today's spotlight: {insight['topic']}"
     footer = f"Source: {escape(website_name)}<br>Sent by your Aero India website checker."
     if feedback_url:
         footer += f'<br><a href="{escape(feedback_url, quote=True)}" style="color:#0b5cad;">Send feedback</a>'
         text += f"\nSend feedback: {feedback_url}\n"
     text += f"\nSource: {website_name} ({website_url})\n"
-    html = _wrap(f"General visitor registration: {label}", _header(label, run_time), body, footer)
+    html = _wrap(preheader, "", body, footer)
     return text, html
 
 
@@ -228,6 +284,16 @@ def render_digest(d):
             more = f"Showing latest {len(shown)} of {p['feedback_total']}."
             body += f'<p style="font-size:12px;color:#6b7785;margin:0 0 12px 0;">{more}</p>'
             text += f"  {more}\n"
+
+    body += '<h3 style="color:%s;margin:26px 0 10px 0;">Insight votes</h3>' % NAVY
+    text += "\nInsight votes (thumbs up / down)\n"
+    if not d.get("votes"):
+        body += '<p style="color:#6b7785;margin:0 0 12px 0;">No votes yet.</p>'
+        text += "No votes yet.\n"
+    for v in d.get("votes", []):
+        body += (f'<div style="margin:0 0 6px 0;">{escape(v["topic"])}: '
+                 f'&#128077; <strong>{v["up"]}</strong> &middot; &#128078; <strong>{v["down"]}</strong></div>')
+        text += f"- {v['topic']}: up {v['up']}, down {v['down']}\n"
 
     html = _wrap(subject, _header("Daily insights digest", date_label), body,
                  "Sent to the owner only. Contains recipient addresses and feedback.")

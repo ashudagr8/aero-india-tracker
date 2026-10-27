@@ -68,24 +68,19 @@ def test_review_only_to_owner(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("verdict", "status"),
+    ("verdict", "with_insight", "expected"),
     [
-        ("Yes", "Started Now"),
-        ("No", "Not Started Yet"),
-        ("Unknown", "Status Unclear"),
+        ("No", True, "Aero India | New Insight | Registration: Not Started"),
+        ("No", False, "Aero India | Registration: Not Started"),
+        ("Unknown", True, "Aero India | New Insight | Registration: Unclear"),
+        ("Unknown", False, "Aero India | Registration: Unclear"),
+        ("Yes", True, "🔔 Registration OPEN | Aero India | New Insight"),
+        ("Yes", False, "🔔 Registration OPEN | Aero India"),
     ],
 )
-@pytest.mark.parametrize("with_insight", [False, True])
-def test_notification_subject_reports_insight_and_registration(
-    monkeypatch, verdict, status, with_insight
-):
+def test_notification_subject(monkeypatch, verdict, with_insight, expected):
     setup(monkeypatch, "a@x.com")
     monkeypatch.setattr(main.insights, "insights_enabled", lambda: False)
-
-    insight = {"id": "article-1", "topic": "Topic", "answer": "Body"} if with_insight else None
+    insight = {"id": "article-1", "topic": "Some long topic name", "answer": "Body"} if with_insight else None
     assert main.send_result_email("a@x.com", "now", verdict, "No", insight)
-
-    prefix = "Aero India | "
-    if with_insight:
-        prefix += "New Insight Available | "
-    assert FakeSMTP.messages[0]["Subject"] == f"{prefix}Registration: {status}"
+    assert FakeSMTP.messages[0]["Subject"] == expected

@@ -224,6 +224,65 @@ def recipient_feedback_link(email: str, article_id) -> str:
     return f"{base}{'&' if '?' in base else '?'}{query}"
 
 
+VOTES_BLOB = "votes.json"
+VOTE_LABELS = {"up": "\U0001F44D Useful", "down": "\U0001F44E Not for me"}
+
+
+def _sign_vote(vote: str, token: str, article_id: str) -> str:
+    msg = f"recipient-vote:{vote}:{token}:{article_id}".encode()
+    return hmac.new(os.environ["APPROVAL_SECRET"].encode(), msg, hashlib.sha256).hexdigest()
+
+
+def vote_link(email: str, article_id: str, vote: str) -> str:
+    token = recipient_token(email)
+    query = urlencode({"action": "vote", "v": vote, "r": token, "a": article_id,
+                       "sig": _sign_vote(vote, token, article_id)})
+    base = os.environ["PUBLIC_URL"]
+    return f"{base}{'&' if '?' in base else '?'}{query}"
+
+
+def handle_vote(method: str, params, recipients, store=None):
+    """Returns (html, status). GET only shows a confirm form (mail scanners prefetch links); POST records."""
+    vote, token, aid, sig = (params.get(k, "") for k in ("v", "r", "a", "sig"))
+    if (vote not in VOTE_LABELS or not token or not aid
+            or not hmac.compare_digest(_sign_vote(vote, token, aid), sig)):
+        return tpl.render_page("Invalid link", "<p>This link is not valid.</p>"), 403
+    email = next((r for r in recipients if recipient_token(r) == token), None)
+    if not email:
+        return tpl.render_page("Link no longer valid", "<p>This link is no longer active.</p>"), 410
+
+    label = VOTE_LABELS[vote]
+    if method != "POST":
+        hidden = "".join(
+            f'<input type="hidden" name="{k}" value="{escape(v, quote=True)}">'
+            for k, v in (("action", "vote"), ("v", vote), ("r", token), ("a", aid), ("sig", sig)))
+        body = (f'<p style="font-size:18px;">Your vote: <strong>{label}</strong></p>'
+                f'<form method="post">{hidden}<p><label>Add a comment (optional)<br>'
+                f'<textarea name="feedback" rows="4" maxlength="{FEEDBACK_MAX_CHARS}" '
+                'style="width:100%;margin-top:6px;"></textarea></label></p>'
+                '<button type="submit" style="background:#0b5cad;color:#fff;border:0;border-radius:6px;'
+                'padding:12px 22px;font-size:15px;cursor:pointer;">Submit</button></form>')
+        return tpl.render_page("Was this insight useful?", body), 200
+
+    text = (params.get("feedback") or "").strip()
+    if len(text) > FEEDBACK_MAX_CHARS:
+        return tpl.render_page(
+            "Too long", f"<p>Please keep comments under {FEEDBACK_MAX_CHARS} characters.</p>"), 413
+
+    store = store or default_store()
+    with STATE_LOCK:
+        votes = store.load(VOTES_BLOB, {})
+        votes.setdefault(aid, {})[token] = {"vote": vote, "at": _now()}
+        store.save(VOTES_BLOB, votes)
+        if text:
+            art = store.load(ARTICLES_BLOB, {}).get(aid)
+            topic = " ".join(art["topic"].split()) if art else "unknown"
+            store.append_text(
+                f"feedback/{token}.txt",
+                f"[{_now()}] recipient={email} article={aid} topic={topic}\n[{label}] {text}\n\n")
+    return tpl.render_page("Thank you", "<p>Your vote was saved.</p>"), 200
+
+
 def handle_recipient_feedback(method: str, params, recipients, store=None):
     """Returns (html, status). GET renders the form; POST appends to the recipient's own file."""
     token, aid, sig = params.get("r", ""), params.get("a", ""), params.get("sig", "")
@@ -481,8 +540,17 @@ def build_digest(recipients, store=None, now=None) -> dict:
         })
         new_feedback += [{**e, "email": email} for e in todays]
 
+    votes = store.load(VOTES_BLOB, {})
+    vote_tally = []
+    for aid, per in votes.items():
+        up = sum(1 for v in per.values() if v.get("vote") == "up")
+        down = sum(1 for v in per.values() if v.get("vote") == "down")
+        topic = " ".join(articles[aid]["topic"].split()) if aid in articles else "unknown"
+        vote_tally.append({"article": aid, "topic": topic, "up": up, "down": down})
+
     return {
         "now": now,
+        "votes": sorted(vote_tally, key=lambda v: v["topic"]),
         "threshold": low_stock_threshold(),
         "approved": len(approved),
         "pending": sum(1 for a in articles.values() if a.get("status") in ("pending", "revision_requested")),
