@@ -21,6 +21,24 @@ import email_templates
 import insights
 import subscribers
 
+# Cloud Run's newer base images block os.utime() on the anonymous (unlinked) temp file
+# gunicorn's gthread worker heartbeats on, crashing every worker with PermissionError.
+# Tolerate the failure; the heartbeat is best-effort for an ephemeral container.
+try:
+    from gunicorn.workers import workertmp as _gworkertmp
+
+    _original_notify = _gworkertmp.WorkerTmp.notify
+
+    def _notify_tolerant(self):
+        try:
+            _original_notify(self)
+        except OSError:
+            pass
+
+    _gworkertmp.WorkerTmp.notify = _notify_tolerant
+except ImportError:
+    pass
+
 
 # Cloud Functions require writing local files to the ephemeral /tmp directory
 SCRAPED_TEXT_FILE = "/tmp/scraped_text.txt"

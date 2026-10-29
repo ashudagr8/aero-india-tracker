@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlparse
 
 import flask
 import pytest
@@ -169,3 +170,37 @@ def test_vote_tally_in_digest(env):
     assert d["votes"] == [{"article": "a1", "topic": "T1", "up": 2, "down": 1}]
     _, text, html = email_templates.render_digest(d)
     assert "T1: up 2, down 1" in text and "Insight votes" in html
+
+
+def test_pending_reviews_include_signed_links(env):
+    d = insights.build_digest([A], env, NOW)
+    assert len(d["pending_reviews"]) == 1
+    r = d["pending_reviews"][0]
+    assert r["topic"] == "T5" and r["revision"] == 1
+    for action in ("approve", "discard", "feedback"):
+        assert r[action].startswith("https://f/run?")
+        assert f"action={action}" in r[action] and "id=a5" in r[action] and "sig=" in r[action]
+    _, text, html = email_templates.render_digest(d)
+    assert "Pending review" in html and "Pending review" in text
+    assert "Approve" in html and "Discard" in html and "Feedback" in html
+    assert r["approve"] in text
+
+
+def test_pending_review_links_are_actionable(env):
+    d = insights.build_digest([A], env, NOW)
+    url = d["pending_reviews"][0]["approve"]
+    query = dict(parse_qsl(urlparse(url).query))
+    with flask.Flask(__name__).test_request_context("/", method="POST", query_string=query):
+        _, status, _headers = main.aero_india_tracker(flask.request)
+    assert status == 200
+    assert env.load(insights.ARTICLES_BLOB, {})["a5"]["status"] == "approved"
+
+
+def test_no_pending_reviews_section_when_none_pending(env):
+    arts = env.load(insights.ARTICLES_BLOB, {})
+    arts["a5"]["status"] = "approved"
+    env.save(insights.ARTICLES_BLOB, arts)
+    d = insights.build_digest([A], env, NOW)
+    assert d["pending_reviews"] == []
+    _, text, html = email_templates.render_digest(d)
+    assert "Pending review" not in html and "Pending review" not in text

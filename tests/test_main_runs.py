@@ -61,6 +61,21 @@ def test_favicon_does_not_run(setup):
     assert setup == []
 
 
+def test_gunicorn_workertmp_notify_tolerates_permission_error(monkeypatch):
+    from gunicorn.workers import workertmp
+    monkeypatch.setattr(workertmp.os, "utime",
+                        lambda *a, **k: (_ for _ in ()).throw(PermissionError(1, "Operation not permitted", 4)))
+
+    class FakeTmp:
+        def fileno(self):
+            return 4
+
+    class FakeWorker:
+        _tmp = FakeTmp()
+
+    workertmp.WorkerTmp.notify(FakeWorker())  # must not raise
+
+
 def test_first_run_sends_three_reviews_and_one_notification(setup):
     call()
     assert len([s for s in setup if s.startswith("Review")]) == 3

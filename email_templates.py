@@ -25,8 +25,9 @@ def article_to_html(text: str) -> str:
             continue
         if all(re.match(r"^[-*•]\s+", ln) for ln in lines):
             items = "".join(
-                f'<li style="margin:0 0 6px 0;">{_inline(re.sub(r"^[-*•]\s+", "", ln))}</li>'
+                f'<li style="margin:0 0 6px 0;">{_inline(text)}</li>'
                 for ln in lines
+                for text in [re.sub(r"^[-*•]\s+", "", ln)]
             )
             blocks.append(f'<ul style="margin:0 0 14px 0;padding-left:20px;">{items}</ul>')
         else:
@@ -259,6 +260,22 @@ def render_digest(d):
                     ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)", "Feedback"))
     body += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
              f'style="font-size:13px;border-collapse:collapse;"><tr>{heads}</tr>{rows}</table>')
+
+    pending_reviews = d.get("pending_reviews", [])
+    if pending_reviews:
+        body += '<h3 style="color:%s;margin:26px 0 10px 0;">Pending review</h3>' % NAVY
+        text += "\nPending review\n"
+        for r in pending_reviews:
+            body += (
+                f'<div style="margin:0 0 12px 0;"><strong>{escape(r["topic"])}</strong> '
+                f'(revision {r["revision"]})<br>'
+                f'<a href="{escape(r["approve"], quote=True)}">Approve</a> &middot; '
+                f'<a href="{escape(r["discard"], quote=True)}">Discard</a> &middot; '
+                f'<a href="{escape(r["feedback"], quote=True)}">Feedback</a></div>')
+            text += (f"- {r['topic']} (revision {r['revision']})\n"
+                     f"  Approve: {r['approve']}\n"
+                     f"  Discard: {r['discard']}\n"
+                     f"  Feedback: {r['feedback']}\n")
 
     body += '<h3 style="color:%s;margin:26px 0 10px 0;">New feedback today</h3>' % NAVY
     text += "\nNew feedback today\n"

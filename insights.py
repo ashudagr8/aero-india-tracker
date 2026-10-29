@@ -562,6 +562,15 @@ def build_digest(recipients, store=None, now=None) -> dict:
         topic = " ".join(articles[aid]["topic"].split()) if aid in articles else "unknown"
         vote_tally.append({"article": aid, "topic": topic, "up": up, "down": down})
 
+    pending_reviews = [
+        {"topic": " ".join(a["topic"].split()), "revision": a["revision"],
+         "approve": _link("approve", aid, a["revision"]),
+         "discard": _link("discard", aid, a["revision"]),
+         "feedback": _link("feedback", aid, a["revision"])}
+        for aid, a in sorted(articles.items())
+        if a.get("status") == "pending"
+    ]
+
     return {
         "now": now,
         "votes": sorted(vote_tally, key=lambda v: v["topic"]),
@@ -569,6 +578,7 @@ def build_digest(recipients, store=None, now=None) -> dict:
         "approved": len(approved),
         "pending": sum(1 for a in articles.values() if a.get("status") in ("pending", "revision_requested")),
         "undrafted": sum(1 for t in topics if t["id"] not in articles),
+        "pending_reviews": pending_reviews,
         "people": people,
         "new_feedback": sorted(new_feedback, key=lambda e: e["at"]),
         "low_stock": any(p["remaining"] <= low_stock_threshold() for p in people),
