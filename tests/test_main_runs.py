@@ -11,6 +11,7 @@ from tests.test_insights import FakeStore
 
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
+    monkeypatch.setenv("RUN_TOKEN", "run-tok")
     monkeypatch.setenv("APPROVAL_SECRET", "s")
     monkeypatch.setenv("PUBLIC_URL", "https://f/run")
     monkeypatch.setenv("ARTICLES_DIR", str(tmp_path))
@@ -33,9 +34,26 @@ def setup(monkeypatch, tmp_path):
     return sent
 
 
-def call(path="/"):
-    with flask.Flask(__name__).test_request_context(path):
+def call(path="/", token="run-tok"):
+    headers = {"X-Run-Token": token} if token is not None else {}
+    with flask.Flask(__name__).test_request_context(path, headers=headers):
         return main.aero_india_tracker(flask.request)
+
+
+@pytest.mark.parametrize("token", [None, "wrong", ""])
+def test_run_requires_token(setup, token):
+    assert call("/", token=token)[1] == 401
+    assert setup == []
+
+
+def test_run_refused_when_token_not_configured(setup, monkeypatch):
+    monkeypatch.delenv("RUN_TOKEN")
+    assert call("/", token="")[1] == 401
+    assert setup == []
+
+
+def test_run_with_token_succeeds(setup):
+    assert call("/")[1] == 200
 
 
 def test_favicon_does_not_run(setup):

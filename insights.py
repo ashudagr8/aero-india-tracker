@@ -475,6 +475,20 @@ def reset_delivery(email=None, store=None):
     return changed
 
 
+def forget_recipient(email: str, store=None) -> None:
+    """Drop one recipient's per-insight delivery history (no backup, since it holds the address)."""
+    store = store or default_store()
+    articles = store.load(ARTICLES_BLOB, {})
+    target, changed = email.strip().lower(), False
+    for art in articles.values():
+        sent = art.get("sent_to") or {}
+        for k in [k for k in sent if k.lower() == target]:
+            del sent[k]
+            changed = True
+    if changed:
+        store.save(ARTICLES_BLOB, articles)
+
+
 # ---- daily owner digest ----------------------------------------------------------------------
 
 IST = ZoneInfo("Asia/Kolkata")

@@ -19,10 +19,12 @@ from openrouter import OpenRouter
 from langchain_core.messages import HumanMessage
 import email_templates
 import insights
+import subscribers
 
 
 # Cloud Functions require writing local files to the ephemeral /tmp directory
 SCRAPED_TEXT_FILE = "/tmp/scraped_text.txt"
+BACKGROUND_IMAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "background-jet.jpg")
 CACHED_ANSWER_FILE = "/tmp/llm_answer.txt"
 RUN_LOG_FILE = "/tmp/run_log.csv"
 
@@ -170,17 +172,25 @@ workflow.add_edge("answer_question", END)
 workflow.add_edge("use_cached_answer", END)
 app = workflow.compile()
 
-def notify_recipients() -> list[str]:
+def configured_recipients() -> list[str]:
     raw = os.environ.get("NOTIFY_EMAIL_TO", GMAIL_ADDRESS) or ""
+    return [a.strip() for a in raw.split(",") if a.strip()]
+
+def notify_recipients() -> list[str]:
+    extra = []
+    try:
+        extra = subscribers.confirmed_emails()
+    except Exception as exc:
+        print(f"Subscriber load failed: {type(exc).__name__}")
     seen, result = set(), []
-    for addr in raw.split(","):
+    for addr in configured_recipients() + extra:
         addr = addr.strip()
         if addr and addr.lower() not in seen:
             seen.add(addr.lower())
             result.append(addr)
     return result
 
-def send_email(to: str, subject: str, text: str, html: str) -> bool:
+def send_email(to: str, subject: str, text: str, html: str, headers: dict | None = None) -> bool:
     """Send one message addressed only to `to` (no Cc/Bcc)."""
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD or not to:
         print("Email not sent: Environment credentials missing.")
@@ -190,6 +200,8 @@ def send_email(to: str, subject: str, text: str, html: str) -> bool:
     message["Subject"] = subject
     message["From"] = GMAIL_ADDRESS
     message["To"] = to
+    for name, value in (headers or {}).items():
+        message[name] = value
     message.attach(MIMEText(text, "plain", "utf-8"))
     message.attach(MIMEText(html, "html", "utf-8"))
 
@@ -205,6 +217,9 @@ def send_email(to: str, subject: str, text: str, html: str) -> bool:
 def send_review_email(subject: str, text: str, html: str) -> bool:
     return send_email(GMAIL_ADDRESS, subject, text, html)
 
+def unsubscribe_headers(url: str) -> dict:
+    return {"List-Unsubscribe": f"<{url}>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+
 def send_result_email(to: str, run_time: str, verdict: str, content_changed: str, insight: dict | None = None) -> bool:
     enabled = insights.insights_enabled()
     feedback_url = (insights.recipient_feedback_link(to, insight["id"] if insight else None)
@@ -213,11 +228,19 @@ def send_result_email(to: str, run_time: str, verdict: str, content_changed: str
     if enabled and insight:
         up_url = insights.vote_link(to, insight["id"], "up")
         down_url = insights.vote_link(to, insight["id"], "down")
+    unsub_url = None
+    try:
+        unsub_url = subscribers.unsubscribe_link(to)
+    except Exception as exc:
+        print(f"Unsubscribe link failed: {type(exc).__name__}")
     subject = email_templates.notification_subject(verdict, bool(insight))
     text, html = email_templates.render_notification(
         run_time, verdict, content_changed, WEBSITE_NAME, WEBSITE_URL,
         insight=insight, feedback_url=feedback_url, vote_up_url=up_url, vote_down_url=down_url,
+        unsubscribe_url=unsub_url,
     )
+    if unsub_url:
+        return send_email(to, subject, text, html, headers=unsubscribe_headers(unsub_url))
     return send_email(to, subject, text, html)
 
 def notify_all(run_time: str, verdict: str, content_changed: str, use_insights: bool) -> tuple[int, int, list]:
@@ -254,6 +277,89 @@ def send_digest() -> dict:
         "new_feedback": len(digest["new_feedback"]),
         "low_stock": digest["low_stock"],
     }
+
+NEUTRAL_MSG = ("If this address can be added, a confirmation email is on its way. "
+               "Open the link in it to activate your subscription.")
+
+def serve_background_image():
+    try:
+        with open(BACKGROUND_IMAGE_FILE, "rb") as f:
+            data = f.read()
+    except OSError:
+        return "Not found", 404
+    return data, 200, {"Content-Type": "image/jpeg", "Cache-Control": "public, max-age=86400"}
+
+def _client_ip(request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    return forwarded.split(",")[0].strip() if forwarded else (request.remote_addr or "")
+
+def handle_subscribe(request):
+    page = email_templates.render_page
+    if not subscribers.enabled():
+        return page("Subscriptions unavailable", "<p>Subscriptions are currently unavailable.</p>"), 503
+    try:
+        if request.method == "GET":
+            if request.args.get("action") == "confirm":
+                result = subscribers.confirm(request.args.get("id", ""), request.args.get("sig", ""))
+                messages = {"confirmed": "Your subscription is active.",
+                            "full": "Sorry, subscriptions are full right now.",
+                            "expired": "This link has expired. Please subscribe again.",
+                            "invalid": "This link is not valid."}
+                return page("Subscription", f"<p>{messages[result]}</p>"), (200 if result == "confirmed" else 400)
+            return email_templates.render_subscribe_form(subscribers.turnstile_site_key(), limit=subscribers.max_subscribers()), 200
+        if request.method != "POST":
+            return "Method not allowed", 405
+        if request.form.get("website"):
+            return page("Check your inbox", f"<p>{NEUTRAL_MSG}</p>"), 200
+        if not subscribers.verify_turnstile(request.form.get("cf-turnstile-response", ""), _client_ip(request)):
+            return email_templates.render_subscribe_form(
+                subscribers.turnstile_site_key(), "Verification failed. Please try again.", subscribers.max_subscribers()), 400
+        outcome = subscribers.request_subscription(
+            request.form.get("email", ""), send_email, extra_recipients=configured_recipients())
+        if outcome == subscribers.INVALID:
+            return email_templates.render_subscribe_form(
+                subscribers.turnstile_site_key(), "Please enter a valid email address.", subscribers.max_subscribers()), 400
+        return page("Check your inbox", f"<p>{NEUTRAL_MSG}</p>"), 200
+    except Exception as exc:
+        print(f"Subscribe failed: {type(exc).__name__}")
+        return page("Error", "<p>Something went wrong. Please try again later.</p>"), 500
+
+def handle_unsubscribe(request):
+    page = email_templates.render_page
+    if not subscribers.enabled():
+        return page("Unavailable", "<p>This page is currently unavailable.</p>"), 503
+    sub_id, sig = request.args.get("id", ""), request.args.get("sig", "")
+    if not subscribers.valid_unsubscribe(sub_id, sig):
+        return page("Unsubscribe", "<p>This link is not valid.</p>"), 400
+    try:
+        if request.method == "GET":
+            return email_templates.render_unsubscribe_confirm(""), 200
+        if request.method != "POST":
+            return "Method not allowed", 405
+        subscribers.unsubscribe(sub_id, sig)
+        return page("Unsubscribed", "<p>You have been unsubscribed and will receive no more emails.</p>"), 200
+    except Exception as exc:
+        print(f"Unsubscribe failed: {type(exc).__name__}")
+        return page("Error", "<p>Something went wrong. Please try again later.</p>"), 500
+
+def handle_unsubscribe_admin(request):
+    if request.method != "POST":
+        return {"status": "method_not_allowed"}, 405
+    expected = os.environ.get("UNSUBSCRIBE_ADMIN_TOKEN", "")
+    supplied = request.headers.get("X-Unsubscribe-Token", "")
+    if not expected or not hmac.compare_digest(supplied, expected):
+        return {"status": "unauthorized"}, 401
+    if not subscribers.enabled():
+        return {"status": "disabled"}, 200
+    email = (request.values.get("email") or "").strip()
+    if not email:
+        return {"status": "bad_request"}, 400
+    try:
+        removed = subscribers.admin_remove(email)
+    except Exception as exc:
+        print(f"Admin unsubscribe failed: {type(exc).__name__}")
+        return {"status": "error"}, 500
+    return {"status": "removed" if removed else "not_found"}, 200 if removed else 404
 
 # HTTP entry point for Google Cloud Functions Framework
 @functions_framework.http
@@ -292,6 +398,18 @@ def aero_india_tracker(request):
         return {"status": "success", "articles_reset": count,
                 "scope": "recipient" if email else "all"}, 200
 
+    if request.path == "/background-jet.jpg":
+        return serve_background_image()
+
+    if request.path == "/subscribe":
+        return handle_subscribe(request)
+
+    if request.path == "/unsubscribe":
+        return handle_unsubscribe(request)
+
+    if request.path == "/unsubscribe-admin":
+        return handle_unsubscribe_admin(request)
+
     # Browsers also request /favicon.ico etc.; those must not trigger a run (or send emails)
     if request.path not in ("", "/"):
         return "Not found", 404
@@ -310,6 +428,11 @@ def aero_india_tracker(request):
             print(f"Approval action failed: {e}")
             html, status = email_templates.render_page("Error", "<p>Something went wrong.</p>"), 500
         return html, status, {"Content-Type": "text/html; charset=utf-8"}
+
+    expected_run = os.environ.get("RUN_TOKEN", "")
+    supplied_run = request.headers.get("X-Run-Token", "")
+    if not expected_run or not hmac.compare_digest(supplied_run, expected_run):
+        return {"status": "unauthorized"}, 401
 
     try:
         inputs = {
