@@ -90,6 +90,11 @@ def _max_revisions() -> int:
     return _env_int("MAX_REVISIONS", 3)
 
 
+# Sampling settings for article writing (generation + revision). OpenRouter path only.
+ARTICLE_SAMPLING = {"temperature": 0.85, "top_p": 0.92,
+                    "frequency_penalty": 0.40, "presence_penalty": 0.30}
+
+
 def _clean(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
 
@@ -332,7 +337,7 @@ def _revise(article: dict, call_llm) -> None:
     feedback = "\n".join(f"- {f['text']}" for f in article["feedback"])
     answer = _clean(call_llm(REVISION_PROMPT.format(
         topic=article["topic"], draft=article["answer"], feedback=feedback,
-        instructions_block=_instructions_block(article.get("instructions", ""))), 0.3))
+        instructions_block=_instructions_block(article.get("instructions", ""))), **ARTICLE_SAMPLING))
     if not answer:
         raise RuntimeError("LLM returned an empty revision.")
     article["history"].append({"revision": article["revision"], "answer": article["answer"]})
@@ -388,7 +393,7 @@ def prepare_insight(call_llm, send_email, store=None, recipients=()):
 
             def generate(t=t):
                 answer = _clean(call_llm(ARTICLE_PROMPT.format(
-                    topic=t["topic"], instructions_block=_instructions_block(t["instructions"])), 0.3))
+                    topic=t["topic"], instructions_block=_instructions_block(t["instructions"])), **ARTICLE_SAMPLING))
                 if not answer:
                     raise RuntimeError("LLM returned an empty article.")
                 articles[t["id"]] = _new_article(t["topic"], answer, t["instructions"])

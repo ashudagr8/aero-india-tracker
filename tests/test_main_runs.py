@@ -22,7 +22,7 @@ def setup(monkeypatch, tmp_path):
     sent = []
     monkeypatch.setattr(main, "send_email", lambda to, s, t, h: sent.append(s) or True)
 
-    def slow_llm(prompt, temperature=0):
+    def slow_llm(prompt, temperature=0, **sampling):
         time.sleep(0.05)
         return "Draft"
     monkeypatch.setattr(main, "call_llm", slow_llm)

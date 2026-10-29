@@ -119,23 +119,27 @@ def create_llm(temperature: float = 0):
         )
     raise ValueError("LLM_PROVIDER must be 'ollama' or 'openrouter'.")
 
-def invoke_openrouter(prompt: str, temperature: float = 0) -> str:
+def invoke_openrouter(prompt: str, temperature: float = 0, top_p=None,
+                      frequency_penalty=None, presence_penalty=None) -> str:
     if not OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter.")
     if not OPENROUTER_MODEL:
         raise RuntimeError("OPENROUTER_MODEL is required when LLM_PROVIDER=openrouter.")
+    extra = {k: v for k, v in (("top_p", top_p), ("frequency_penalty", frequency_penalty),
+                               ("presence_penalty", presence_penalty)) if v is not None}
     with OpenRouter(api_key=OPENROUTER_API_KEY) as client:
         completion = client.chat.send(
             model=OPENROUTER_MODEL,
             models=OPENROUTER_FALLBACK_MODELS or None,  # OpenRouter falls back in order if the primary fails
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
+            **extra,
         )
     return completion.choices[0].message.content or ""
 
-def call_llm(prompt: str, temperature: float = 0) -> str:
+def call_llm(prompt: str, temperature: float = 0, **sampling) -> str:
     if LLM_PROVIDER == "openrouter":
-        return invoke_openrouter(prompt, temperature)
+        return invoke_openrouter(prompt, temperature, **sampling)
     return create_llm(temperature).invoke([HumanMessage(content=prompt)]).content
 
 def parse_verdict(answer: str) -> str:
