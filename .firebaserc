@@ -1,0 +1,15 @@
+{
+  "projects": {
+    "default": "website-tracker-dev-512201"
+  },
+  "targets": {
+    "website-tracker-dev-512201": {
+      "hosting": {
+        "dev-custom": [
+          "aero-tracker-dev"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

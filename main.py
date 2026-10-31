@@ -453,7 +453,12 @@ def aero_india_tracker(request):
 
     expected_run = os.environ.get("RUN_TOKEN", "")
     supplied_run = request.headers.get("X-Run-Token", "")
-    if not expected_run or not hmac.compare_digest(supplied_run, expected_run):
+    run_authorized = expected_run and hmac.compare_digest(supplied_run, expected_run)
+    if not run_authorized:
+        # Send browsers hitting the bare domain to the subscribe page; keep 401 for non-browser calls.
+        accepts_html = "text/html" in request.headers.get("Accept", "")
+        if request.method in ("GET", "HEAD") and accepts_html and subscribers.enabled():
+            return "", 302, {"Location": "/subscribe"}
         return {"status": "unauthorized"}, 401
 
     try:
