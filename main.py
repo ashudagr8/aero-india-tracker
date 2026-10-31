@@ -290,7 +290,14 @@ def notify_all(run_time: str, verdict: str, content_changed: str, use_insights: 
 def send_digest() -> dict:
     """Build and email the owner digest. Read-only with respect to insight state."""
     with insights.STATE_LOCK:
-        digest = insights.build_digest(notify_recipients())
+        try:
+            subscribed_at = subscribers.confirmed_timestamps()
+            subscriber_counts = subscribers.counts()
+        except Exception as exc:
+            print(f"Subscriber info failed: {type(exc).__name__}")
+            subscribed_at, subscriber_counts = {}, None
+        digest = insights.build_digest(notify_recipients(), subscribed_at=subscribed_at,
+                                       subscriber_counts=subscriber_counts)
     subject, text, html = email_templates.render_digest(digest)
     return {
         "status": "success",

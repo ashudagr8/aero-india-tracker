@@ -51,6 +51,34 @@ def test_stock_and_delivery_counts(env):
     assert a["last_sent"].strftime("%H:%M") == "06:30"
 
 
+def test_subscriber_counts_in_digest(env):
+    counts = {"confirmed": 3, "pending": 2, "limit": 50}
+    d = insights.build_digest([A], env, NOW, subscriber_counts=counts)
+    assert d["subscriber_counts"] == counts
+    _, text, html = email_templates.render_digest(d)
+    assert "pending email verification" in html and "pending email verification" in text
+    assert "<strong>2</strong> pending email verification" in html
+    assert "2 pending email verification" in text
+
+
+def test_subscriber_counts_omitted_when_none(env):
+    d = insights.build_digest([A], env, NOW)
+    assert d["subscriber_counts"] is None
+    _, text, html = email_templates.render_digest(d)
+    assert "pending email verification" not in html
+
+
+def test_subscribed_at_in_digest(env):
+    subscribed = {A: "2026-03-01T04:00:00+00:00"}  # 09:30 IST
+    d = insights.build_digest([A, B], env, NOW, subscribed_at=subscribed)
+    a, b = d["people"]
+    assert a["subscribed_at"].strftime("%d/%m/%y %H:%M") == "01/03/26 09:30"
+    assert b["subscribed_at"] is None
+    _, text, html = email_templates.render_digest(d)
+    assert "Subscribed (IST)" in html
+    assert "01/03/26" in html and "subscribed 01/03/26" in text
+
+
 def test_ist_day_boundary(env):
     # 19:00 UTC on the 9th is 00:30 IST on the 10th: counts as today
     arts = env.load(insights.ARTICLES_BLOB, {})

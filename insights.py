@@ -531,14 +531,19 @@ def parse_feedback(text: str) -> list:
     return entries
 
 
-def build_digest(recipients, store=None, now=None) -> dict:
-    """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day."""
+def build_digest(recipients, store=None, now=None, subscribed_at=None, subscriber_counts=None) -> dict:
+    """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day.
+
+    `subscribed_at` optionally maps recipient email -> subscription ISO timestamp.
+    `subscriber_counts` optionally provides {"confirmed", "pending", "limit"} for the newsletter.
+    """
     store = store or default_store()
     now = (now or datetime.now(timezone.utc)).astimezone(IST)
     today = now.date()
     articles = store.load(ARTICLES_BLOB, {})
     topics = load_topics(store)
     approved = {aid: a for aid, a in articles.items() if a.get("status") == "approved"}
+    subscribed_at = subscribed_at or {}
 
     people, new_feedback = [], []
     for email in recipients:
@@ -549,6 +554,7 @@ def build_digest(recipients, store=None, now=None) -> dict:
         last_sent = max((d for d in sent.values() if d), default=None)
         people.append({
             "email": email,
+            "subscribed_at": _to_ist(subscribed_at.get(email.lower())),
             "received": len(sent),
             "received_today": sum(1 for d in sent.values() if d and d.date() == today),
             "remaining": len(approved) - len(sent),
@@ -584,6 +590,7 @@ def build_digest(recipients, store=None, now=None) -> dict:
         "pending": sum(1 for a in articles.values() if a.get("status") in ("pending", "revision_requested")),
         "undrafted": sum(1 for t in topics if t["id"] not in articles),
         "pending_reviews": pending_reviews,
+        "subscriber_counts": subscriber_counts,
         "people": people,
         "new_feedback": sorted(new_feedback, key=lambda e: e["at"]),
         "low_stock": any(p["remaining"] <= low_stock_threshold() for p in people),

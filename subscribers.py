@@ -167,6 +167,22 @@ def counts(store=None) -> dict:
             "limit": max_subscribers()}
 
 
+def confirmed_timestamps(store=None) -> dict:
+    """Map of confirmed subscriber email -> confirmed_at ISO timestamp (best-effort)."""
+    if not enabled():
+        return {}
+    store = store or insights.default_store()
+    out = {}
+    for rec in store.load(SUBSCRIBERS_BLOB, {}).values():
+        if rec.get("status") != "confirmed":
+            continue
+        try:
+            out[_decrypt(rec["email_enc"]).lower()] = rec.get("confirmed_at")
+        except Exception as exc:
+            print(f"Subscriber decrypt failed: {type(exc).__name__}")
+    return out
+
+
 # ---- subscribe / confirm -----------------------------------------------------------------------
 
 def _confirmation_email(link: str):

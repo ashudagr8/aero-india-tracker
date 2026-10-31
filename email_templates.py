@@ -236,6 +236,14 @@ def render_digest(d):
     )
     text = (f"Daily insights digest ({date_label})\n\nApproved: {d['approved']}, "
             f"pending review: {d['pending']}, topics not yet drafted: {d['undrafted']}\n")
+    sc = d.get("subscriber_counts")
+    if sc:
+        body += (
+            f'<p style="margin:0 0 16px 0;">Subscribers: <strong>{sc["confirmed"]}</strong> confirmed &middot; '
+            f'<strong>{sc["pending"]}</strong> pending email verification &middot; '
+            f'limit {sc["limit"]}</p>')
+        text += (f"Subscribers: {sc['confirmed']} confirmed, "
+                 f"{sc['pending']} pending email verification, limit {sc['limit']}\n")
     if d["low_stock"]:
         low = [p for p in people if p["remaining"] <= threshold]
         body += (
@@ -246,18 +254,21 @@ def render_digest(d):
 
     cell = 'style="padding:6px 8px;border-bottom:1px solid #e5e9f0;text-align:left;"'
     rows = ""
-    text += "\nRecipients (received / today / remaining / last sent / feedback total / today)\n"
+    text += "\nRecipients (received / today / remaining / last sent / subscribed / feedback total / today)\n"
     for p in people:
         flag = ' style="background-color:#fdecea;"' if p["remaining"] <= threshold else ""
         rows += (
             f"<tr{flag}><td {cell}>{escape(p['email'])}</td><td {cell}>{p['received']}</td>"
             f"<td {cell}>{p['received_today']}</td><td {cell}><strong>{p['remaining']}</strong></td>"
             f"<td {cell}>{escape(_fmt(p['last_sent']))}</td>"
+            f"<td {cell}>{escape(_fmt(p.get('subscribed_at')))}</td>"
             f"<td {cell}>{p['feedback_total']} ({p['feedback_today']} today)</td></tr>")
         text += (f"- {p['email']}: {p['received']} / {p['received_today']} / {p['remaining']} / "
-                 f"{_fmt(p['last_sent'])} / {p['feedback_total']} / {p['feedback_today']}\n")
+                 f"{_fmt(p['last_sent'])} / subscribed {_fmt(p.get('subscribed_at'))} / "
+                 f"{p['feedback_total']} / {p['feedback_today']}\n")
     heads = "".join(f"<th {cell}>{h}</th>" for h in
-                    ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)", "Feedback"))
+                    ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)",
+                     "Subscribed (IST)", "Feedback"))
     body += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
              f'style="font-size:13px;border-collapse:collapse;"><tr>{heads}</tr>{rows}</table>')
 
