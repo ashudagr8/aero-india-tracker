@@ -1,0 +1,15 @@
+{
+  "hosting": {
+    "target": "dev-custom",
+    "public": "public",
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "aero-india-tracker",
+          "region": "us-central1"
+        }
+      }
+    ]
+  }
+}

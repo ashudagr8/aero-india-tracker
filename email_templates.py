@@ -25,8 +25,9 @@ def article_to_html(text: str) -> str:
             continue
         if all(re.match(r"^[-*•]\s+", ln) for ln in lines):
             items = "".join(
-                f'<li style="margin:0 0 6px 0;">{_inline(re.sub(r"^[-*•]\s+", "", ln))}</li>'
+                f'<li style="margin:0 0 6px 0;">{_inline(text)}</li>'
                 for ln in lines
+                for text in [re.sub(r"^[-*•]\s+", "", ln)]
             )
             blocks.append(f'<ul style="margin:0 0 14px 0;padding-left:20px;">{items}</ul>')
         else:
@@ -113,7 +114,8 @@ def _vote_block(up_url, down_url, comment_url):
 
 
 def render_notification(run_time, verdict, content_changed, website_name, website_url,
-                        insight=None, feedback_url=None, vote_up_url=None, vote_down_url=None):
+                        insight=None, feedback_url=None, vote_up_url=None, vote_down_url=None,
+                        unsubscribe_url=None):
     label, color = STATUS_STYLES.get(verdict.lower(), STATUS_STYLES["unknown"])
     link = escape(website_url, quote=True)
     body = (
@@ -158,6 +160,9 @@ def render_notification(run_time, verdict, content_changed, website_name, websit
     if feedback_url:
         footer += f'<br><a href="{escape(feedback_url, quote=True)}" style="color:#0b5cad;">Send feedback</a>'
         text += f"\nSend feedback: {feedback_url}\n"
+    if unsubscribe_url:
+        footer += f'<br><a href="{escape(unsubscribe_url, quote=True)}" style="color:#0b5cad;">Unsubscribe</a>'
+        text += f"\nUnsubscribe: {unsubscribe_url}\n"
     text += f"\nSource: {website_name} ({website_url})\n"
     html = _wrap(preheader, "", body, footer)
     return text, html
@@ -231,6 +236,14 @@ def render_digest(d):
     )
     text = (f"Daily insights digest ({date_label})\n\nApproved: {d['approved']}, "
             f"pending review: {d['pending']}, topics not yet drafted: {d['undrafted']}\n")
+    sc = d.get("subscriber_counts")
+    if sc:
+        body += (
+            f'<p style="margin:0 0 16px 0;">Subscribers: <strong>{sc["confirmed"]}</strong> confirmed &middot; '
+            f'<strong>{sc["pending"]}</strong> pending email verification &middot; '
+            f'limit {sc["limit"]}</p>')
+        text += (f"Subscribers: {sc['confirmed']} confirmed, "
+                 f"{sc['pending']} pending email verification, limit {sc['limit']}\n")
     if d["low_stock"]:
         low = [p for p in people if p["remaining"] <= threshold]
         body += (
@@ -241,20 +254,39 @@ def render_digest(d):
 
     cell = 'style="padding:6px 8px;border-bottom:1px solid #e5e9f0;text-align:left;"'
     rows = ""
-    text += "\nRecipients (received / today / remaining / last sent / feedback total / today)\n"
+    text += "\nRecipients (received / today / remaining / last sent / subscribed / feedback total / today)\n"
     for p in people:
         flag = ' style="background-color:#fdecea;"' if p["remaining"] <= threshold else ""
         rows += (
             f"<tr{flag}><td {cell}>{escape(p['email'])}</td><td {cell}>{p['received']}</td>"
             f"<td {cell}>{p['received_today']}</td><td {cell}><strong>{p['remaining']}</strong></td>"
             f"<td {cell}>{escape(_fmt(p['last_sent']))}</td>"
+            f"<td {cell}>{escape(_fmt(p.get('subscribed_at')))}</td>"
             f"<td {cell}>{p['feedback_total']} ({p['feedback_today']} today)</td></tr>")
         text += (f"- {p['email']}: {p['received']} / {p['received_today']} / {p['remaining']} / "
-                 f"{_fmt(p['last_sent'])} / {p['feedback_total']} / {p['feedback_today']}\n")
+                 f"{_fmt(p['last_sent'])} / subscribed {_fmt(p.get('subscribed_at'))} / "
+                 f"{p['feedback_total']} / {p['feedback_today']}\n")
     heads = "".join(f"<th {cell}>{h}</th>" for h in
-                    ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)", "Feedback"))
+                    ("Recipient", "Received", "Today", "Remaining", "Last sent (IST)",
+                     "Subscribed (IST)", "Feedback"))
     body += (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
              f'style="font-size:13px;border-collapse:collapse;"><tr>{heads}</tr>{rows}</table>')
+
+    pending_reviews = d.get("pending_reviews", [])
+    if pending_reviews:
+        body += '<h3 style="color:%s;margin:26px 0 10px 0;">Pending review</h3>' % NAVY
+        text += "\nPending review\n"
+        for r in pending_reviews:
+            body += (
+                f'<div style="margin:0 0 12px 0;"><strong>{escape(r["topic"])}</strong> '
+                f'(revision {r["revision"]})<br>'
+                f'<a href="{escape(r["approve"], quote=True)}">Approve</a> &middot; '
+                f'<a href="{escape(r["discard"], quote=True)}">Discard</a> &middot; '
+                f'<a href="{escape(r["feedback"], quote=True)}">Feedback</a></div>')
+            text += (f"- {r['topic']} (revision {r['revision']})\n"
+                     f"  Approve: {r['approve']}\n"
+                     f"  Discard: {r['discard']}\n"
+                     f"  Feedback: {r['feedback']}\n")
 
     body += '<h3 style="color:%s;margin:26px 0 10px 0;">New feedback today</h3>' % NAVY
     text += "\nNew feedback today\n"
@@ -304,8 +336,105 @@ def render_page(title: str, body_html: str) -> str:
     return (
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{escape(title)}</title></head>"
-        f'<body style="margin:0;background:#eef2f7;font-family:{FONT};color:#1f2937;">'
-        '<div style="max-width:600px;margin:30px auto;background:#fff;border-radius:8px;padding:28px 30px;">'
-        f'<h2 style="margin-top:0;color:{NAVY};">{escape(title)}</h2>{body_html}</div></body></html>'
+        f"<title>{escape(title)}</title>"
+        "<style>*{box-sizing:border-box;}"
+        f"body{{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;"
+        f"padding:32px 16px;font-family:{FONT};color:#1f2937;"
+        "background:linear-gradient(160deg,rgba(3,10,24,.88) 0%,rgba(8,24,48,.60) 45%,rgba(3,10,24,.92) 100%),"
+        'url("background-jet.jpg") center/cover no-repeat fixed;}'
+        ".card{width:100%;max-width:560px;background:rgba(255,255,255,.97);"
+        "-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);"
+        "border:1px solid rgba(255,255,255,.6);border-radius:18px;"
+        "box-shadow:0 24px 60px rgba(2,8,23,.45);padding:32px 36px;}"
+        f"h2{{margin-top:0;color:{NAVY};}}"
+        "@media (max-width:400px){.card{padding:22px 16px;}}"
+        "</style></head><body>"
+        f'<div class="card"><h2>{escape(title)}</h2>{body_html}</div></body></html>'
     )
+
+
+def render_subscribe_form(site_key: str, message: str = "", limit: int = 50) -> str:
+    note = f'<p class="note">{escape(message)}</p>' if message else ""
+    css = (
+        "*{box-sizing:border-box;}"
+        "body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;"
+        "padding:32px 16px;font-family:" + FONT + ";color:#1f2937;"
+        "background:linear-gradient(160deg,rgba(3,10,24,.88) 0%,rgba(8,24,48,.60) 45%,rgba(3,10,24,.92) 100%),"
+        'url("background-jet.jpg") center/cover no-repeat fixed;}'
+        ".card{width:100%;max-width:520px;background:rgba(255,255,255,.97);"
+        "-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);"
+        "border:1px solid rgba(255,255,255,.6);border-radius:18px;"
+        "box-shadow:0 24px 60px rgba(2,8,23,.45);padding:36px 40px;}"
+        ".header{text-align:center;}"
+        "h1{margin:0;color:" + NAVY + ";font-size:28px;letter-spacing:-.02em;}"
+        ".subtitle{margin:8px 0 16px;color:#4b5b6e;font-size:15px;}"
+        ".badge{display:inline-block;margin:0 0 22px;padding:7px 16px;border-radius:999px;"
+        "background:#e7f0fc;border:1px solid #c3d9f2;color:#0b5cad;font-size:13px;font-weight:600;}"
+        ".info-section{background:#f3f7fc;border-left:4px solid #0b5cad;border-radius:0 10px 10px 0;"
+        "padding:16px 20px;margin:0 0 22px;font-size:14px;line-height:21px;text-align:left;}"
+        ".info-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+        "color:" + NAVY + ";margin-bottom:10px;}"
+        ".info-section ul{margin:0;padding-left:18px;}"
+        ".info-section li{margin:0 0 12px;}"
+        ".info-section li:last-child{margin-bottom:0;}"
+        ".note{color:#b42318;margin:0 0 14px;}"
+        ".field-label{display:block;font-weight:700;font-size:14px;margin:0 0 6px;color:#1f2937;}"
+        ".email{width:100%;padding:12px 14px;font-size:15px;border:1px solid #c9d4e0;border-radius:8px;"
+        "margin-bottom:16px;background:#fff;}"
+        ".email:focus{outline:2px solid #0b5cad;outline-offset:1px;border-color:#0b5cad;}"
+        ".turnstile-wrap{display:flex;justify-content:center;margin:0 0 16px;}"
+        ".cta{width:100%;padding:14px 18px;font-size:16px;font-weight:600;color:#fff;border:0;border-radius:8px;"
+        "background:linear-gradient(90deg,#0b5cad,#1b6fd1);cursor:pointer;}"
+        ".cta:hover{background:#0a4f96;}"
+        "@media (max-width:400px){.card{padding:22px 16px;}h1{font-size:23px;}}"
+    )
+    return (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Subscribe &middot; Aero India 2027 Tracker</title>"
+        f"<style>{css}</style></head><body>"
+        '<div class="card">'
+        '<div class="header">'
+        "<h1>Aero India 2027 Tracker</h1>"
+        '<p class="subtitle">Get notified as visitor registration opens.</p>'
+        '<p class="badge">&#10024; Includes weekly aircraft deep-dives &amp; stories</p>'
+        "</div>"
+        '<div class="info-section">'
+        '<div class="info-title">&#9992; Service Details</div>'
+        "<ul>"
+        "<li><strong>Aviation Snippets:</strong> Every Wednesday, Friday, and Sunday, you will receive "
+        "a short, engaging read exploring the history and engineering breakthroughs of an amazing "
+        "flying machine.</li>"
+        "<li><strong>Tracker Alerts:</strong> The moment ticket and visitor registrations go live, "
+        "you'll be notified in the next scheduled email.</li>"
+        "<li><strong>Passion Project:</strong> Formed directly out of my personal struggle to navigate "
+        "public ticket timelines and a deep love for aerospace development.</li>"
+        "<li><strong>100% Free &amp; Clean:</strong> No hidden costs, promotional banners, or "
+        "third-party marketing ads.</li>"
+        f"<li><strong>Capped Space:</strong> Restricted strictly to {int(limit)} curated subscriber "
+        "slots to keep cloud server bills sustainable.</li>"
+        "<li><strong>Temporary:</strong> The automated tracker terminates completely exactly one week "
+        "after Aero India 2027 wraps up.</li>"
+        "</ul></div>" + note +
+        '<form method="POST" action="">'
+        '<label class="field-label" for="email">Email Address</label>'
+        '<input class="email" id="email" type="email" name="email" required maxlength="254" '
+        'placeholder="you@example.com">'
+        '<div style="position:absolute;left:-9999px;" aria-hidden="true">'
+        '<input type="text" name="website" tabindex="-1" autocomplete="off"></div>'
+        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
+        '<div class="turnstile-wrap">'
+        f'<div class="cf-turnstile" data-sitekey="{escape(site_key)}"></div></div>'
+        '<button class="cta" type="submit">Subscribe to Updates &amp; Stories</button></form>'
+        "</div></body></html>"
+    )
+
+
+def render_unsubscribe_confirm(action_url: str) -> str:
+    body = (
+        "<p>Stop receiving Aero India tracker emails at this address?</p>"
+        f'<form method="POST" action="{escape(action_url, quote=True)}">'
+        '<button type="submit" style="background:#b42318;color:#fff;border:0;border-radius:6px;'
+        'padding:10px 18px;font-size:15px;">Unsubscribe</button></form>'
+    )
+    return render_page("Unsubscribe", body)

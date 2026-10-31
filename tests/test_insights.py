@@ -25,7 +25,7 @@ def env(monkeypatch):
 
 
 def make_llm(calls):
-    def llm(prompt, temperature=0):
+    def llm(prompt, temperature=0, **sampling):
         calls.append(prompt)
         return "<think>x</think>Draft v%d" % len(calls)
     return llm
@@ -34,6 +34,27 @@ def make_llm(calls):
 def params_from(link):
     from urllib.parse import urlparse, parse_qsl
     return dict(parse_qsl(urlparse(link).query))
+
+
+def test_article_writing_uses_sampling_settings():
+    store = FakeStore([{"id": "q1", "topic": "Aerodynamic stalls"}])
+    seen = []
+
+    def llm(prompt, temperature=0, **sampling):
+        seen.append({"temperature": temperature, **sampling})
+        return "Draft"
+    insights.prepare_insight(llm, lambda *a: True, store)
+    assert seen == [{"temperature": 0.85, "top_p": 0.92,
+                     "frequency_penalty": 0.40, "presence_penalty": 0.30}]
+
+    # revision path uses the same settings
+    art = store.data[insights.ARTICLES_BLOB]["q1"]
+    art["status"] = "revision_requested"
+    art["feedback"] = [{"revision": 1, "text": "shorter"}]
+    seen.clear()
+    insights.prepare_insight(llm, lambda *a: True, store)
+    assert seen[0] == {"temperature": 0.85, "top_p": 0.92,
+                       "frequency_penalty": 0.40, "presence_penalty": 0.30}
 
 
 def test_full_flow_generate_feedback_revise_approve_send():

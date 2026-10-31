@@ -90,6 +90,11 @@ def _max_revisions() -> int:
     return _env_int("MAX_REVISIONS", 3)
 
 
+# Sampling settings for article writing (generation + revision). OpenRouter path only.
+ARTICLE_SAMPLING = {"temperature": 0.85, "top_p": 0.92,
+                    "frequency_penalty": 0.40, "presence_penalty": 0.30}
+
+
 def _clean(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
 
@@ -332,7 +337,7 @@ def _revise(article: dict, call_llm) -> None:
     feedback = "\n".join(f"- {f['text']}" for f in article["feedback"])
     answer = _clean(call_llm(REVISION_PROMPT.format(
         topic=article["topic"], draft=article["answer"], feedback=feedback,
-        instructions_block=_instructions_block(article.get("instructions", ""))), 0.3))
+        instructions_block=_instructions_block(article.get("instructions", ""))), **ARTICLE_SAMPLING))
     if not answer:
         raise RuntimeError("LLM returned an empty revision.")
     article["history"].append({"revision": article["revision"], "answer": article["answer"]})
@@ -388,7 +393,7 @@ def prepare_insight(call_llm, send_email, store=None, recipients=()):
 
             def generate(t=t):
                 answer = _clean(call_llm(ARTICLE_PROMPT.format(
-                    topic=t["topic"], instructions_block=_instructions_block(t["instructions"])), 0.3))
+                    topic=t["topic"], instructions_block=_instructions_block(t["instructions"])), **ARTICLE_SAMPLING))
                 if not answer:
                     raise RuntimeError("LLM returned an empty article.")
                 articles[t["id"]] = _new_article(t["topic"], answer, t["instructions"])
@@ -475,6 +480,20 @@ def reset_delivery(email=None, store=None):
     return changed
 
 
+def forget_recipient(email: str, store=None) -> None:
+    """Drop one recipient's per-insight delivery history (no backup, since it holds the address)."""
+    store = store or default_store()
+    articles = store.load(ARTICLES_BLOB, {})
+    target, changed = email.strip().lower(), False
+    for art in articles.values():
+        sent = art.get("sent_to") or {}
+        for k in [k for k in sent if k.lower() == target]:
+            del sent[k]
+            changed = True
+    if changed:
+        store.save(ARTICLES_BLOB, articles)
+
+
 # ---- daily owner digest ----------------------------------------------------------------------
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -512,14 +531,19 @@ def parse_feedback(text: str) -> list:
     return entries
 
 
-def build_digest(recipients, store=None, now=None) -> dict:
-    """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day."""
+def build_digest(recipients, store=None, now=None, subscribed_at=None, subscriber_counts=None) -> dict:
+    """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day.
+
+    `subscribed_at` optionally maps recipient email -> subscription ISO timestamp.
+    `subscriber_counts` optionally provides {"confirmed", "pending", "limit"} for the newsletter.
+    """
     store = store or default_store()
     now = (now or datetime.now(timezone.utc)).astimezone(IST)
     today = now.date()
     articles = store.load(ARTICLES_BLOB, {})
     topics = load_topics(store)
     approved = {aid: a for aid, a in articles.items() if a.get("status") == "approved"}
+    subscribed_at = subscribed_at or {}
 
     people, new_feedback = [], []
     for email in recipients:
@@ -530,6 +554,7 @@ def build_digest(recipients, store=None, now=None) -> dict:
         last_sent = max((d for d in sent.values() if d), default=None)
         people.append({
             "email": email,
+            "subscribed_at": _to_ist(subscribed_at.get(email.lower())),
             "received": len(sent),
             "received_today": sum(1 for d in sent.values() if d and d.date() == today),
             "remaining": len(approved) - len(sent),
@@ -548,6 +573,15 @@ def build_digest(recipients, store=None, now=None) -> dict:
         topic = " ".join(articles[aid]["topic"].split()) if aid in articles else "unknown"
         vote_tally.append({"article": aid, "topic": topic, "up": up, "down": down})
 
+    pending_reviews = [
+        {"topic": " ".join(a["topic"].split()), "revision": a["revision"],
+         "approve": _link("approve", aid, a["revision"]),
+         "discard": _link("discard", aid, a["revision"]),
+         "feedback": _link("feedback", aid, a["revision"])}
+        for aid, a in sorted(articles.items())
+        if a.get("status") == "pending"
+    ]
+
     return {
         "now": now,
         "votes": sorted(vote_tally, key=lambda v: v["topic"]),
@@ -555,6 +589,8 @@ def build_digest(recipients, store=None, now=None) -> dict:
         "approved": len(approved),
         "pending": sum(1 for a in articles.values() if a.get("status") in ("pending", "revision_requested")),
         "undrafted": sum(1 for t in topics if t["id"] not in articles),
+        "pending_reviews": pending_reviews,
+        "subscriber_counts": subscriber_counts,
         "people": people,
         "new_feedback": sorted(new_feedback, key=lambda e: e["at"]),
         "low_stock": any(p["remaining"] <= low_stock_threshold() for p in people),

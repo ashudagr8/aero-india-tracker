@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlparse
 
 import flask
 import pytest
@@ -48,6 +49,34 @@ def test_stock_and_delivery_counts(env):
     assert (b["received"], b["received_today"], b["remaining"]) == (1, 0, 3)
     assert (new["received"], new["remaining"], new["last_sent"]) == (0, 4, None)
     assert a["last_sent"].strftime("%H:%M") == "06:30"
+
+
+def test_subscriber_counts_in_digest(env):
+    counts = {"confirmed": 3, "pending": 2, "limit": 50}
+    d = insights.build_digest([A], env, NOW, subscriber_counts=counts)
+    assert d["subscriber_counts"] == counts
+    _, text, html = email_templates.render_digest(d)
+    assert "pending email verification" in html and "pending email verification" in text
+    assert "<strong>2</strong> pending email verification" in html
+    assert "2 pending email verification" in text
+
+
+def test_subscriber_counts_omitted_when_none(env):
+    d = insights.build_digest([A], env, NOW)
+    assert d["subscriber_counts"] is None
+    _, text, html = email_templates.render_digest(d)
+    assert "pending email verification" not in html
+
+
+def test_subscribed_at_in_digest(env):
+    subscribed = {A: "2026-03-01T04:00:00+00:00"}  # 09:30 IST
+    d = insights.build_digest([A, B], env, NOW, subscribed_at=subscribed)
+    a, b = d["people"]
+    assert a["subscribed_at"].strftime("%d/%m/%y %H:%M") == "01/03/26 09:30"
+    assert b["subscribed_at"] is None
+    _, text, html = email_templates.render_digest(d)
+    assert "Subscribed (IST)" in html
+    assert "01/03/26" in html and "subscribed 01/03/26" in text
 
 
 def test_ist_day_boundary(env):
@@ -169,3 +198,37 @@ def test_vote_tally_in_digest(env):
     assert d["votes"] == [{"article": "a1", "topic": "T1", "up": 2, "down": 1}]
     _, text, html = email_templates.render_digest(d)
     assert "T1: up 2, down 1" in text and "Insight votes" in html
+
+
+def test_pending_reviews_include_signed_links(env):
+    d = insights.build_digest([A], env, NOW)
+    assert len(d["pending_reviews"]) == 1
+    r = d["pending_reviews"][0]
+    assert r["topic"] == "T5" and r["revision"] == 1
+    for action in ("approve", "discard", "feedback"):
+        assert r[action].startswith("https://f/run?")
+        assert f"action={action}" in r[action] and "id=a5" in r[action] and "sig=" in r[action]
+    _, text, html = email_templates.render_digest(d)
+    assert "Pending review" in html and "Pending review" in text
+    assert "Approve" in html and "Discard" in html and "Feedback" in html
+    assert r["approve"] in text
+
+
+def test_pending_review_links_are_actionable(env):
+    d = insights.build_digest([A], env, NOW)
+    url = d["pending_reviews"][0]["approve"]
+    query = dict(parse_qsl(urlparse(url).query))
+    with flask.Flask(__name__).test_request_context("/", method="POST", query_string=query):
+        _, status, _headers = main.aero_india_tracker(flask.request)
+    assert status == 200
+    assert env.load(insights.ARTICLES_BLOB, {})["a5"]["status"] == "approved"
+
+
+def test_no_pending_reviews_section_when_none_pending(env):
+    arts = env.load(insights.ARTICLES_BLOB, {})
+    arts["a5"]["status"] = "approved"
+    env.save(insights.ARTICLES_BLOB, arts)
+    d = insights.build_digest([A], env, NOW)
+    assert d["pending_reviews"] == []
+    _, text, html = email_templates.render_digest(d)
+    assert "Pending review" not in html and "Pending review" not in text

@@ -63,7 +63,7 @@ The service account needs read/write access to the bucket (for example `roles/st
 - Thumbs up/down totals per insight.
 - Overall feedback per recipient: total count plus the latest 5 entries (each truncated to 300 characters).
 
-The request must send the token as the `X-Digest-Token` header (preferred) or `?token=` query parameter; a missing or wrong token returns 401 and sends nothing. Example Cloud Scheduler job, end of day IST:
+The request must send the token as the `X-Digest-Token` header (preferred) or `?token=` query parameter; a missing or wrong token returns 401 and sends nothing. The main run on `/` is protected the same way: Cloud Scheduler must send `X-Run-Token: <RUN_TOKEN>`. Because `/subscribe` has to be public, also set a low max-instances, keep secrets in Secret Manager and keep the subscribers bucket private. Example Cloud Scheduler job, end of day IST:
 
 ```
 gcloud scheduler jobs create http insights-digest --schedule="30 21 * * *" --time-zone="Asia/Kolkata" \
@@ -98,10 +98,22 @@ Avoid running it while a notification run is in progress.
 | `NOTIFY_EMAIL_TO` | No (defaults to `GMAIL_ADDRESS`) | Recipient address(es), comma-separated; each gets a separate private message (review emails go only to `GMAIL_ADDRESS`) |
 | `INCLUDE_INSIGHTS` | No (default `true`) | `false` disables the insights feature |
 | `DIGEST_TOKEN` | For `/digest` | Shared secret required to call the daily digest route |
+| `RUN_TOKEN` | Yes, to run the tracker | Shared secret the scheduler sends as the `X-Run-Token` header when calling `/`. Without it set, runs return 401 (signed approve/vote/feedback links, `/subscribe` and `/unsubscribe` are unaffected) |
 | `RESET_TOKEN` | For `/reset` | Shared secret required to call the reset route (POST only) |
 | `LOW_STOCK_THRESHOLD` | No (default `3`) | Remaining-insights level at or below which the digest warns of low stock |
 | `ARTICLES_BUCKET` | For insights (or `ARTICLES_DIR`) | Bucket holding `topics.json` and `articles.json` |
 | `ARTICLES_DIR` | Local runs only | Local folder holding the same two files instead of a bucket, e.g. `./.local-articles`. Takes precedence over `ARTICLES_BUCKET`. Not suitable for Cloud Run (ephemeral disk). |
+| `SUBSCRIBER_ENC_KEY` | For `/subscribe` | Fernet key(s), comma-separated for rotation (`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
+| `SUBSCRIBER_HASH_KEY` | For `/subscribe` | Secret used to hash addresses in `subscribers.json` |
+| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | For `/subscribe` | Cloudflare Turnstile keys; verified server-side. If either is missing, `/subscribe` is unavailable (fails closed) |
+| `UNSUBSCRIBE_ADMIN_TOKEN` | For `/unsubscribe-admin` | Shared secret for the admin removal route (`POST` with `X-Unsubscribe-Token` header and `email` field) |
+| `MAX_SUBSCRIBERS` | No (default `50`) | Cap on pending + confirmed self-subscribers; `0` closes subscriptions |
+
+`/subscribe` also needs `APPROVAL_SECRET`, an `https://` `PUBLIC_URL` and a store (`ARTICLES_BUCKET` or `ARTICLES_DIR`). Flow: form with Turnstile, then server-side verification, then a pending entry and a signed confirmation email; the subscriber is active only after clicking the link. At most one email per address per 24h is sent, and every outcome shows the same neutral page. Unconfirmed sign-ups expire after 24h.
+
+The subscribe page is a glassmorphism landing page whose background blends a dark gradient into `background-jet.jpg`, served at `/background-jet.jpg` from the function directory. Keep that file in the repo root so it is uploaded on deploy (it is not excluded by `.gcloudignore`).
+
+**Unsubscribe:** every email to a self-subscriber has an Unsubscribe footer link plus `List-Unsubscribe` / `List-Unsubscribe-Post` (one-click) headers. The link carries an opaque id and signature, never the address. `GET /unsubscribe` only shows a confirm button; `POST` deletes the subscriber and their delivery history (idempotent). Addresses in `NOTIFY_EMAIL_TO` get no unsubscribe link; remove them by editing the variable.
 | `APPROVAL_SECRET` | For insights | Secret used to sign approval links |
 | `PUBLIC_URL` | For insights | Public URL of this function, used in approval links |
 | `MAX_NEW_ARTICLES_PER_RUN` | No (default `3`) | Max LLM drafts/revisions per run |

@@ -14,6 +14,7 @@ env/
 .env.*
 *.pem
 *.key
+rotate.py
 
 # Local run output
 .local-articles/
