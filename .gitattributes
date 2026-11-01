@@ -1,0 +1,4 @@
+# Per-branch environment config: keep the merging-into branch's version on merge.
+# Requires: git config merge.ours.driver true  (once per clone)
+.firebaserc merge=ours
+firebase.json merge=ours

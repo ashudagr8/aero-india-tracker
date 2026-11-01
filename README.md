@@ -236,6 +236,8 @@ firebase deploy --only hosting:prod
 
 A hosting deploy ships only the rewrite config and the placeholder page; deploy the Cloud Run service itself separately (Cloud Code or gcloud) from the branch you want it to run.
 
+**Per-branch config.** `.firebaserc` and `firebase.json` differ between `main` (prod) and `pre-defined-questions` (dev) and are protected by a `merge=ours` rule in `.gitattributes`: merging another branch always keeps the current branch's version of these two files. Run `git config merge.ours.driver true` once per clone to enable it. Because the whole file is kept, routing changes made to `firebase.json` on another branch (redirects, rewrites) are dropped on merge - port them to this branch by hand.
+
 ### Troubleshooting
 
 * **`EISDIR` while deploying:** the `.venv` folder was included in the upload; check `.gcloudignore`.
