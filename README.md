@@ -139,8 +139,8 @@ gcloud run services update aero-india-tracker \
 * `requirements.txt` - pinned dependencies
 * `.gcloudignore` - keeps `.venv`, caches and editor files out of the deploy bundle
 * `.vscode/launch.json` - Cloud Code deploy and local debug configurations
-* `firebase.json` / `.firebaserc` - Firebase Hosting sites and the Cloud Run rewrite (see [Deploy Firebase Hosting](#deploy-firebase-hosting))
-* `public/` - placeholder page for Firebase Hosting; the catch-all rewrite takes precedence over it
+* `firebase.json` / `.firebaserc` - Firebase Hosting site, the `/` → `/subscribe` redirect and the Cloud Run rewrite (see [Deploy Firebase Hosting](#deploy-firebase-hosting))
+* `public/` - empty folder required by Firebase Hosting; all traffic is redirected or rewritten
 
 ## Notes
 
@@ -214,7 +214,7 @@ Local runs write the cache files to `/tmp`. Delete `/tmp/scraped_text.txt` and `
 
 ### Deploy Firebase Hosting
 
-Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). `public/index.html` is only a placeholder - the rewrite takes precedence.
+Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). A hosting redirect sends `/` to `/subscribe` at the CDN (301), so the bare domain lands on the subscribe page without invoking the function. The `public/` directory holds no pages - it exists only because Firebase requires the folder.
 
 One hosting target is configured in `.firebaserc` (Firebase project `website-traker`):
 
