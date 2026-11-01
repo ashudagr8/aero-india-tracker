@@ -1,12 +1,15 @@
 {
   "projects": {
-    "default": "website-tracker-dev-512201"
+    "default": "website-traker"
   },
   "targets": {
-    "website-tracker-dev-512201": {
+    "website-traker": {
       "hosting": {
         "dev-custom": [
-          "aero-tracker-dev"
+          "website-tracker"
+        ],
+        "prod": [
+          "aeroindia-tracker"
         ]
       }
     }
