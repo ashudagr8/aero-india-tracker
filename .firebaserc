@@ -5,9 +5,6 @@
   "targets": {
     "website-traker": {
       "hosting": {
-        "dev-custom": [
-          "website-tracker"
-        ],
         "prod": [
           "aeroindia-tracker"
         ]

@@ -216,24 +216,22 @@ Local runs write the cache files to `/tmp`. Delete `/tmp/scraped_text.txt` and `
 
 Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). `public/index.html` is only a placeholder - the rewrite takes precedence.
 
-Two hosting targets are configured in `.firebaserc` (Firebase project `website-traker`):
+One hosting target is configured in `.firebaserc` (Firebase project `website-traker`):
 
 | Target | Site | URL | Cloud Run service (region) |
 | --- | --- | --- | --- |
-| `dev-custom` | `website-tracker` | https://website-tracker.web.app | `aero_india_tracker` (`asia-southeast2`) |
-| `prod` | `aeroindia-tracker` | https://aeroindia-tracker.web.app | `aero_india_tracker_prod` (`asia-southeast2`) |
+| `prod` | `aeroindia-tracker` | https://aeroindia-tracker.web.app | `aero-india-tracker` (`asia-southeast2`) |
 
 One-time setup for a new site:
 
 1. Enable the APIs on the project: `gcloud services enable cloudresourcemanager.googleapis.com firebasehosting.googleapis.com --project website-traker`, then create the site: `firebase hosting:sites:create <site-id>`.
-1. Deploy the backing Cloud Run service and set its env vars. For prod, use the **Deploy Cloud Function (prod)** configuration in `.vscode/launch.json` (function `aero_india_tracker_prod`, entry point `aero_india_tracker`). Set `PUBLIC_URL` to the site URL (for example `https://aeroindia-tracker.web.app` on the prod service) so subscribe, unsubscribe and approval links in emails point at the right host. Each service needs its own `PUBLIC_URL`. The hosting deploy validates that the service exists in the same project and region, so deploy the service before `firebase deploy`.
-1. Add the site hostnames (`<site-id>.web.app` and `<site-id>.firebaseapp.com`) to the Cloudflare Turnstile widget's allowed hostnames, or `/subscribe` verification fails on that URL.
+1. Deploy the backing Cloud Run service and set its env vars. Set `PUBLIC_URL` to the site URL (`https://aeroindia-tracker.web.app`) so subscribe, unsubscribe and approval links in emails point at the right host. The hosting deploy validates that the service exists in the same project and region, so deploy the service before `firebase deploy`.
+1. Add the site hostnames (`aeroindia-tracker.web.app` and `aeroindia-tracker.firebaseapp.com`) to the Cloudflare Turnstile widget's allowed hostnames, or `/subscribe` verification fails on that URL.
 
-Deploy a target from the repo root:
+Deploy from the repo root:
 
 ```bash
-firebase deploy --only hosting:dev-custom   # dev
-firebase deploy --only hosting:prod         # prod, from a main checkout
+firebase deploy --only hosting:prod
 ```
 
 A hosting deploy ships only the rewrite config and the placeholder page; deploy the Cloud Run service itself separately (Cloud Code or gcloud) from the branch you want it to run.
