@@ -226,7 +226,7 @@ Two hosting targets are configured in `.firebaserc` (Firebase project `website-t
 One-time setup for a new site:
 
 1. Enable the APIs on the project: `gcloud services enable cloudresourcemanager.googleapis.com firebasehosting.googleapis.com --project website-traker`, then create the site: `firebase hosting:sites:create <site-id>`.
-1. Deploy the backing Cloud Run service and set its env vars. Set `PUBLIC_URL` to the site URL (for example `https://aeroindia-tracker.web.app` on the prod service) so subscribe, unsubscribe and approval links in emails point at the right host. Each service needs its own `PUBLIC_URL`.
+1. Deploy the backing Cloud Run service and set its env vars. For prod, use the **Deploy Cloud Function (prod)** configuration in `.vscode/launch.json` (function `aero_india_tracker_prod`, entry point `aero_india_tracker`). Set `PUBLIC_URL` to the site URL (for example `https://aeroindia-tracker.web.app` on the prod service) so subscribe, unsubscribe and approval links in emails point at the right host. Each service needs its own `PUBLIC_URL`. The hosting deploy validates that the service exists in the same project and region, so deploy the service before `firebase deploy`.
 1. Add the site hostnames (`<site-id>.web.app` and `<site-id>.firebaseapp.com`) to the Cloudflare Turnstile widget's allowed hostnames, or `/subscribe` verification fails on that URL.
 
 Deploy a target from the repo root:

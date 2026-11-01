@@ -13,6 +13,17 @@
         "runtime": "python314"
       },
       {
+        "name": "Deploy Cloud Function (prod)",
+        "type": "cloudcode.cloudfunctions",
+        "request": "launch",
+        "functionName": "aero_india_tracker_prod",
+        "gen": "GEN_2",
+        "entryPoint": "aero_india_tracker",
+        "testInput": "",
+        "region": "asia-southeast2",
+        "runtime": "python314"
+      },
+      {
         "name": "Python: Run Functions Framework",
         "type": "debugpy",
         "request": "launch",
