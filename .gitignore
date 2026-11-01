@@ -30,3 +30,6 @@ SUBSCRIPTION_PLAN.md
 .idea/
 .DS_Store
 .vscode/
+
+# Firebase
+.firebase/
