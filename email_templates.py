@@ -228,6 +228,9 @@ def render_digest(d):
                f"{len(people)} recipients, {len(new_fb)} new feedback")
     if d["low_stock"]:
         subject += " | LOW STOCK"
+    maintenance = d.get("maintenance") or {}
+    if maintenance.get("paused"):
+        subject += " | MAINTENANCE PAUSED"
 
     body = (
         f'<p style="margin:0 0 16px 0;">Approved insights: <strong>{d["approved"]}</strong> &middot; '
@@ -251,6 +254,13 @@ def render_digest(d):
             f'margin:0 0 18px 0;"><strong>Low stock:</strong> {len(low)} recipient(s) have '
             f'{threshold} or fewer insights left. Add new topics soon.</div>')
         text += f"\nLOW STOCK: {len(low)} recipient(s) have {threshold} or fewer insights left.\n"
+    if maintenance.get("paused"):
+        since = _fmt(maintenance["paused_at"]) if maintenance.get("paused_at") else "unknown time"
+        body += (
+            '<div style="background-color:#fff4e0;border-left:4px solid #e67e22;padding:12px 16px;'
+            f'margin:0 0 18px 0;"><strong>Maintenance mode:</strong> subscriber notifications are '
+            f'paused since {escape(since)}. Resume with the /maintenance command.</div>')
+        text += f"\nMAINTENANCE PAUSED since {since}: subscribers receive no notifications.\n"
 
     cell = 'style="padding:6px 8px;border-bottom:1px solid #e5e9f0;text-align:left;"'
     rows = ""
