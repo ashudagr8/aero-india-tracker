@@ -25,6 +25,7 @@ llm_answer.txt
 plan.md
 IMPLEMENTATION_PLAN.md
 SUBSCRIPTION_PLAN.md
+verify_scheduler_fix.sh
 
 # Editor / OS
 .idea/
