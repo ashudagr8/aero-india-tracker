@@ -83,6 +83,18 @@ curl -X POST -H "X-Reset-Token: <RESET_TOKEN>" -d email=a@example.com "<function
 
 Avoid running it while a notification run is in progress.
 
+### Maintenance mode (`/maintenance`)
+
+Pauses notification emails to **self-service subscribers** until you resume. While paused, scheduled runs still scrape, call the LLM, draft insights and email `NOTIFY_EMAIL_TO` recipients as usual — only addresses from `subscribers.json` are skipped, and their insight backlog is kept (nothing is marked sent, so they continue where they left off after resume). The state lives in `maintenance.json` in the store, so it survives cold starts and applies to every instance. Requires header `X-Maintenance-Token` equal to `MAINTENANCE_TOKEN` (route is disabled if unset). Run these from any terminal, e.g. the one where you manage the deployment with `gcloud`:
+
+```
+curl -X POST -H "X-Maintenance-Token: <MAINTENANCE_TOKEN>" -d action=pause  "<function URL>/maintenance"
+curl -X POST -H "X-Maintenance-Token: <MAINTENANCE_TOKEN>" -d action=resume "<function URL>/maintenance"
+curl        -H "X-Maintenance-Token: <MAINTENANCE_TOKEN>"                   "<function URL>/maintenance"   # status
+```
+
+`GET` returns the current state; `POST` with `action=pause` or `action=resume` updates it (idempotent). There is no auto-expiry — resume explicitly. The daily digest shows a MAINTENANCE PAUSED reminder while paused. A pause takes effect on the next run; a run already in progress may still send.
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -100,6 +112,7 @@ Avoid running it while a notification run is in progress.
 | `DIGEST_TOKEN` | For `/digest` | Shared secret required to call the daily digest route |
 | `RUN_TOKEN` | Yes, to run the tracker | Shared secret the scheduler sends as the `X-Run-Token` header when calling `/`. Without it set, runs return 401 (signed approve/vote/feedback links, `/subscribe` and `/unsubscribe` are unaffected) |
 | `RESET_TOKEN` | For `/reset` | Shared secret required to call the reset route (POST only) |
+| `MAINTENANCE_TOKEN` | For `/maintenance` | Shared secret required to pause/resume subscriber notifications (GET status, POST `action=pause\|resume`) |
 | `LOW_STOCK_THRESHOLD` | No (default `3`) | Remaining-insights level at or below which the digest warns of low stock |
 | `ARTICLES_BUCKET` | For insights (or `ARTICLES_DIR`) | Bucket holding `topics.json` and `articles.json` |
 | `ARTICLES_DIR` | Local runs only | Local folder holding the same two files instead of a bucket, e.g. `./.local-articles`. Takes precedence over `ARTICLES_BUCKET`. Not suitable for Cloud Run (ephemeral disk). |
@@ -133,6 +146,7 @@ gcloud run services update aero-india-tracker \
 
 * `main.py` - the function code and LangGraph workflow
 * `insights.py` - topic/article storage, LLM drafting and revision, signed approval actions
+* `maintenance.py` - maintenance-mode state (pause/resume subscriber notifications)
 * `email_templates.py` - HTML and plain-text email templates
 * `topics.example.json` - 10 seed topics to upload as `topics.json`
 * `tests/` - unit tests (`python -m pytest tests`)

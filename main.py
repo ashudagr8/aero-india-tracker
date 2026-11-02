@@ -19,6 +19,7 @@ from openrouter import OpenRouter
 from langchain_core.messages import HumanMessage
 import email_templates
 import insights
+import maintenance
 import subscribers
 
 # Cloud Run's newer base images block os.utime() on the anonymous (unlinked) temp file
@@ -198,12 +199,13 @@ def configured_recipients() -> list[str]:
     raw = os.environ.get("NOTIFY_EMAIL_TO", GMAIL_ADDRESS) or ""
     return [a.strip() for a in raw.split(",") if a.strip()]
 
-def notify_recipients() -> list[str]:
+def notify_recipients(include_subscribers: bool = True) -> list[str]:
     extra = []
-    try:
-        extra = subscribers.confirmed_emails()
-    except Exception as exc:
-        print(f"Subscriber load failed: {type(exc).__name__}")
+    if include_subscribers:
+        try:
+            extra = subscribers.confirmed_emails()
+        except Exception as exc:
+            print(f"Subscriber load failed: {type(exc).__name__}")
     seen, result = set(), []
     for addr in configured_recipients() + extra:
         addr = addr.strip()
@@ -265,9 +267,10 @@ def send_result_email(to: str, run_time: str, verdict: str, content_changed: str
         return send_email(to, subject, text, html, headers=unsubscribe_headers(unsub_url))
     return send_email(to, subject, text, html)
 
-def notify_all(run_time: str, verdict: str, content_changed: str, use_insights: bool) -> tuple[int, int, list]:
+def notify_all(run_time: str, verdict: str, content_changed: str, use_insights: bool,
+               include_subscribers: bool = True) -> tuple[int, int, list]:
     """One private message per recipient, each with its own next insight. Returns (sent, total, insight ids)."""
-    recipients = notify_recipients()
+    recipients = notify_recipients(include_subscribers)
     sent, included = 0, []
     for to in recipients:
         insight = None
@@ -296,8 +299,14 @@ def send_digest() -> dict:
         except Exception as exc:
             print(f"Subscriber info failed: {type(exc).__name__}")
             subscribed_at, subscriber_counts = {}, None
+        try:
+            maintenance_state = maintenance.state()
+        except Exception as exc:
+            print(f"Maintenance state failed: {type(exc).__name__}")
+            maintenance_state = None
         digest = insights.build_digest(notify_recipients(), subscribed_at=subscribed_at,
-                                       subscriber_counts=subscriber_counts)
+                                       subscriber_counts=subscriber_counts,
+                                       maintenance_state=maintenance_state)
     subject, text, html = email_templates.render_digest(digest)
     return {
         "status": "success",
@@ -390,6 +399,27 @@ def handle_unsubscribe_admin(request):
         return {"status": "error"}, 500
     return {"status": "removed" if removed else "not_found"}, 200 if removed else 404
 
+def handle_maintenance(request):
+    """Admin maintenance mode: GET returns state, POST with action=pause|resume updates it."""
+    expected = os.environ.get("MAINTENANCE_TOKEN", "")
+    supplied = request.headers.get("X-Maintenance-Token", "")
+    if not expected or not hmac.compare_digest(supplied, expected):
+        return {"status": "unauthorized"}, 401
+    if request.method == "GET":
+        action = "status"
+    elif request.method == "POST":
+        action = (request.values.get("action") or "").strip().lower()
+    else:
+        return {"status": "method_not_allowed"}, 405
+    if action not in ("status", "pause", "resume"):
+        return {"status": "bad_request", "message": "action must be 'pause' or 'resume'"}, 400
+    try:
+        state = maintenance.state() if action == "status" else maintenance.set_paused(action == "pause")
+    except Exception as exc:
+        print(f"Maintenance {action} failed: {type(exc).__name__}")
+        return {"status": "error"}, 500
+    return {"status": "success", "maintenance": state}, 200
+
 # HTTP entry point for Google Cloud Functions Framework
 @functions_framework.http
 def aero_india_tracker(request):
@@ -438,6 +468,9 @@ def aero_india_tracker(request):
 
     if request.path == "/unsubscribe-admin":
         return handle_unsubscribe_admin(request)
+
+    if request.path == "/maintenance":
+        return handle_maintenance(request)
 
     # Browsers also request /favicon.ico etc.; those must not trigger a run (or send emails)
     if request.path not in ("", "/"):
@@ -489,6 +522,14 @@ def aero_india_tracker(request):
         insight_summary = None
         # One run at a time per instance, so overlapping requests cannot draft or send twice
         with insights.STATE_LOCK:
+            try:
+                paused = maintenance.is_paused()
+            except Exception as e:
+                # A state lookup failure must not block the notification
+                print(f"Maintenance state check failed: {type(e).__name__}")
+                paused = False
+            if paused:
+                print("Maintenance mode: subscriber notifications paused.")
             if insights.insights_enabled():
                 try:
                     insight_summary = insights.prepare_insight(call_llm, send_review_email, recipients=notify_recipients())
@@ -498,7 +539,8 @@ def aero_india_tracker(request):
                     insight_summary = {"errors": [str(e)]}
 
             sent_count, total, included = notify_all(
-                run_time, verdict, content_changed, insights.insights_enabled())
+                run_time, verdict, content_changed, insights.insights_enabled(),
+                include_subscribers=not paused)
 
         return {
             "status": "success",
@@ -506,6 +548,7 @@ def aero_india_tracker(request):
             "verdict": verdict,
             "content_changed": content_changed,
             "answer": result["answer"],
+            "maintenance": "paused" if paused else "active",
             "insights_included": len(included),
             "recipients": {"sent": sent_count, "total": total},
             "insights": insight_summary,

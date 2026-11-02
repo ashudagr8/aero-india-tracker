@@ -531,11 +531,13 @@ def parse_feedback(text: str) -> list:
     return entries
 
 
-def build_digest(recipients, store=None, now=None, subscribed_at=None, subscriber_counts=None) -> dict:
+def build_digest(recipients, store=None, now=None, subscribed_at=None, subscriber_counts=None,
+                 maintenance_state=None) -> dict:
     """Read-only summary of insight stock, delivery and feedback. `today` is the IST calendar day.
 
     `subscribed_at` optionally maps recipient email -> subscription ISO timestamp.
     `subscriber_counts` optionally provides {"confirmed", "pending", "limit"} for the newsletter.
+    `maintenance_state` optionally provides the maintenance mode state (see maintenance.py).
     """
     store = store or default_store()
     now = (now or datetime.now(timezone.utc)).astimezone(IST)
@@ -582,8 +584,11 @@ def build_digest(recipients, store=None, now=None, subscribed_at=None, subscribe
         if a.get("status") == "pending"
     ]
 
+    maintenance_state = maintenance_state or {}
     return {
         "now": now,
+        "maintenance": {"paused": bool(maintenance_state.get("paused")),
+                        "paused_at": _to_ist(maintenance_state.get("paused_at"))},
         "votes": sorted(vote_tally, key=lambda v: v["topic"]),
         "threshold": low_stock_threshold(),
         "approved": len(approved),
