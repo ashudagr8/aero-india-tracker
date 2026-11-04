@@ -154,7 +154,7 @@ gcloud run services update aero-india-tracker \
 * `.gcloudignore` - keeps `.venv`, caches and editor files out of the deploy bundle
 * `.vscode/launch.json` - Cloud Code deploy and local debug configurations
 * `firebase.json` / `.firebaserc` - Firebase Hosting site, the `/` → `/subscribe` redirect and the Cloud Run rewrite (see [Deploy Firebase Hosting](#deploy-firebase-hosting))
-* `public/` - empty folder required by Firebase Hosting; all traffic is redirected or rewritten
+* `public/` - static files served by Firebase Hosting before the rewrite applies. Holds only the Google Search Console verification file (`googleb56d7bbad5dd983b.html`, also under `public/subscribe/`); everything else is redirected or rewritten. Do not remove the verification file - Google re-checks it and the property loses verification if it disappears.
 
 ## Notes
 
@@ -228,7 +228,7 @@ Local runs write the cache files to `/tmp`. Delete `/tmp/scraped_text.txt` and `
 
 ### Deploy Firebase Hosting
 
-Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). A hosting redirect sends `/` to `/subscribe` at the CDN (301), so the bare domain lands on the subscribe page without invoking the function. The `public/` directory holds no pages - it exists only because Firebase requires the folder.
+Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). A hosting redirect sends `/` to `/subscribe` at the CDN (301), so the bare domain lands on the subscribe page without invoking the function. Exact-match static files in `public/` are served by the CDN before the rewrite applies; the only such file is the Google Search Console verification file `googleb56d7bbad5dd983b.html` (at the host root and under `/subscribe/`), which must stay in place to keep the Search Console property verified.
 
 One hosting target is configured in `.firebaserc` (Firebase project `website-traker`):
 
@@ -248,7 +248,7 @@ Deploy from the repo root:
 firebase deploy --only hosting:prod
 ```
 
-A hosting deploy ships only the rewrite config and the placeholder page; deploy the Cloud Run service itself separately (Cloud Code or gcloud) from the branch you want it to run.
+A hosting deploy ships only the rewrite config and the static files in `public/`; deploy the Cloud Run service itself separately (Cloud Code or gcloud) from the branch you want it to run.
 
 **Per-branch config.** `.firebaserc` and `firebase.json` differ between `main` (prod) and `pre-defined-questions` (dev) and are protected by a `merge=ours` rule in `.gitattributes`: merging another branch always keeps the current branch's version of these two files. Run `git config merge.ours.driver true` once per clone to enable it. Because the whole file is kept, routing changes made to `firebase.json` on another branch (redirects, rewrites) are dropped on merge - port them to this branch by hand.
 
