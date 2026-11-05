@@ -153,8 +153,8 @@ gcloud run services update aero-india-tracker \
 * `requirements.txt` - pinned dependencies
 * `.gcloudignore` - keeps `.venv`, caches and editor files out of the deploy bundle
 * `.vscode/launch.json` - Cloud Code deploy and local debug configurations
-* `firebase.json` / `.firebaserc` - Firebase Hosting site, the `/` → `/subscribe` redirect and the Cloud Run rewrite (see [Deploy Firebase Hosting](#deploy-firebase-hosting))
-* `public/` - static files served by Firebase Hosting before the rewrite applies. Holds only the Google Search Console verification file (`googleb56d7bbad5dd983b.html`, also under `public/subscribe/`); everything else is redirected or rewritten. Do not remove the verification file - Google re-checks it and the property loses verification if it disappears.
+* `firebase.json` / `.firebaserc` - Firebase Hosting site and the Cloud Run rewrite (see [Deploy Firebase Hosting](#deploy-firebase-hosting))
+* `public/` - static files served by Firebase Hosting before the rewrite applies. Holds only the Google Search Console verification file (`googleb56d7bbad5dd983b.html`, also under `public/subscribe/`); everything else is rewritten. Do not remove the verification file - Google re-checks it and the property loses verification if it disappears.
 
 ## Notes
 
@@ -228,7 +228,7 @@ Local runs write the cache files to `/tmp`. Delete `/tmp/scraped_text.txt` and `
 
 ### Deploy Firebase Hosting
 
-Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). A hosting redirect sends `/` to `/subscribe` at the CDN (301), so the bare domain lands on the subscribe page without invoking the function. Exact-match static files in `public/` are served by the CDN before the rewrite applies; the only such file is the Google Search Console verification file `googleb56d7bbad5dd983b.html` (at the host root and under `/subscribe/`), which must stay in place to keep the Search Console property verified.
+Firebase Hosting fronts the Cloud Run service: a catch-all rewrite in `firebase.json` proxies every request to the function, so the site URL and the function share routes (`/subscribe`, approval links, and so on). Browsers hitting the bare domain are sent to `/subscribe` by the function itself (302); there is deliberately no hosting redirect for `/`, because approval/feedback/discard links are signed against the root URL (`/?action=...`) and a CDN-level redirect to `/subscribe` would drop them on the subscribe form. Exact-match static files in `public/` are served by the CDN before the rewrite applies; the only such file is the Google Search Console verification file `googleb56d7bbad5dd983b.html` (at the host root and under `/subscribe/`), which must stay in place to keep the Search Console property verified.
 
 One hosting target is configured in `.firebaserc` (Firebase project `website-traker`):
 

@@ -2,13 +2,6 @@
   "hosting": {
     "target": "prod",
     "public": "public",
-    "redirects": [
-      {
-        "source": "/",
-        "destination": "/subscribe",
-        "type": 301
-      }
-    ],
     "rewrites": [
       {
         "source": "**",
